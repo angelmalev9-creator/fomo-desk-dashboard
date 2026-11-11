@@ -76,7 +76,8 @@
     return label;
   }
   const empty = (title, text) => `<div class="empty"><b>${escapeHtml(title)}</b>${escapeHtml(text)}</div>`;
-  const REASON = { stop: "стоп", trail: "trail", timeout: "таймаут", pulled: "изтеглена ликвидност", sellall: "спри и продай" };
+  const REASON = { stop: "стоп", trail: "trail", timeout: "таймаут", pulled: "изтеглена ликвидност", sellall: "спри и продай", trader_sold: "трейдърът продаде" };
+  const srcTag = (r) => r && r.source_label ? ` <span class="src-tag">${escapeHtml(r.source_label)}</span>` : "";
   function showBanner(text, isError) {
     if (!text) { el.banner.classList.add("hidden"); el.banner.textContent = ""; return; }
     el.banner.classList.remove("hidden");
@@ -236,7 +237,7 @@
     el.openList.innerHTML = rows.map((r) => {
       const rem = r.remaining_s == null ? "" : ` · таймаут след ${ageLabel(r.remaining_s * 1000)}`;
       return `<div class="pos-row">
-        <div class="pos-main"><div class="pos-name">${coinAnchor(r)}</div>
+        <div class="pos-main"><div class="pos-name">${coinAnchor(r)}${srcTag(r)}</div>
           <div class="pos-sub">${escapeHtml(r.size_display || money(r.size_usd))} · вход ${escapeHtml(r.entry_price_display || "—")} · сега ${escapeHtml(r.last_price_display || "—")}</div>
           <div class="pos-sub">${escapeHtml(r.trail_state || "")}${escapeHtml(rem)}</div></div>
         <div class="pos-pnl ${clsPnl(r.unrealized_pnl_usd)}">${escapeHtml(r.unrealized_pnl_usd == null ? "—" : signedMoney(r.unrealized_pnl_usd))}
@@ -254,7 +255,7 @@
       const why = sell && f.exit_reason ? ` · ${REASON[f.exit_reason] || f.exit_reason}` : "";
       return `<div class="fill"><time>${escapeHtml(fmtSofia(f.ts, false))}</time>
         <span class="side ${sell ? "sell" : "buy"}">${sell ? "продажба" : "покупка"}</span>
-        <span class="fname">${coinAnchor(f)}<small>${escapeHtml(why)}</small></span>${right}</div>`;
+        <span class="fname">${coinAnchor(f)}${srcTag(f)}<small>${escapeHtml(why)}</small></span>${right}</div>`;
     }).join("");
   }
 
@@ -300,7 +301,7 @@
       rows.slice().reverse().map((r) => `<tr><td>${coinAnchor(r)}</td><td>${escapeHtml(fmtSofia(r.closed_at, true))}</td>
       <td class="num">${escapeHtml(money(r.size_usd))}</td>
       <td class="num ${clsPnl(r.pnl_usd)}">${escapeHtml(signedMoney(r.pnl_usd))}${r.pnl_pct == null ? "" : ` (${escapeHtml(signedPct(r.pnl_pct))})`}</td>
-      <td>${escapeHtml(REASON[r.exit_reason] || r.exit_reason || "—")}</td></tr>`).join("")}</tbody></table>`;
+      <td>${escapeHtml(REASON[r.exit_reason] || r.exit_reason || "—")}${srcTag(r)}</td></tr>`).join("")}</tbody></table>`;
   }
 
   function renderStop(data) {
