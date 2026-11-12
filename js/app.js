@@ -1,544 +1,358 @@
 (() => {
   "use strict";
-
   const STORAGE_KEY = "fomoDeskGistId";
-  const POLL_MS = 75_000;
+  const POLL_MS = 60_000;
   const STALE_MS = 3 * 60 * 1000;
   const ZONE = "Europe/Sofia";
   const $ = (id) => document.getElementById(id);
+  const RANGES = { "1h": 3600e3, "4h": 4 * 3600e3, "12h": 12 * 3600e3, "1d": 24 * 3600e3, "1w": 7 * 24 * 3600e3, all: Infinity };
+  const MARKS = [2, 5, 10, 20, 50, 100];
 
-  const el = {
-    setup: $("setup"), banner: $("banner"), app: $("app"), demoBanner: $("demo-banner"),
-    freshness: $("freshness"), nightSub: $("night-sub"), modeBadge: $("mode-badge"),
-    liveBadge: $("live-badge"), quietBadge: $("quiet-badge"), pausedBadge: $("paused-badge"),
-    balValue: $("bal-value"), balChange: $("bal-change"), heroSide: $("hero-side"), equityNote: $("equity-note"),
-    agents: $("agents"), openList: $("open-list"), fills: $("fills"), funnel: $("funnel"), rejects: $("rejects"),
-    feed: $("feed"), closed: $("closed-table"),
-    stopBar: $("stop-bar"), stopBtn: $("stop-btn"), stopNote: $("stop-note"),
-  };
-
-  let equityChart = null, replayChart = null;
-  let lastData = null, lastFetchOkAt = null, gistId = null, demo = false;
-  let currentView = "desk";
-  let confettiShown = false;
+  let data = null, lastOkAt = null, gistId = null, demo = false, view = "desk", range = "12h", feedAll = false;
 
   // ------------------------------------------------------------ helpers
-  function escapeHtml(s) {
-    return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const num = (v) => (v == null || v === "" || Number.isNaN(Number(v)) ? null : Number(v));
+  const cls = (v) => (num(v) == null || Math.abs(v) < 0.005 ? "neu" : v > 0 ? "pos" : "neg");
+  const ts = (v) => { if (!v) return null; const d = new Date(v); return Number.isNaN(d.getTime()) ? null : d; };
+  function money(v, d = 2) { const n = num(v); if (n == null) return "—"; return "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }); }
+  const smoney = (v) => (num(v) == null ? "—" : (v < 0 ? "−" : "+") + money(v));
+  const spct = (v, d = 1) => (num(v) == null ? "—" : (v < 0 ? "−" : "+") + Math.abs(v).toFixed(d) + "%");
+  function hm(v, withDate) {
+    const d = v instanceof Date ? v : ts(v); if (!d) return "—";
+    const o = withDate ? { timeZone: ZONE, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false } : { timeZone: ZONE, hour: "2-digit", minute: "2-digit", hour12: false };
+    return new Intl.DateTimeFormat("bg-BG", o).format(d).replace(" г.", "");
   }
-  function hashParams() {
-    const raw = (location.hash || "").replace(/^#/, "");
-    return new URLSearchParams(raw.includes("=") ? raw : "");
+  function ago(ms) { if (ms == null) return "—"; const s = Math.max(0, Math.round(ms / 1000)); if (s < 60) return `${s} с`; const m = Math.floor(s / 60); if (m < 60) return `${m} мин`; return `${Math.floor(m / 60)} ч ${m % 60} мин`; }
+  function dur(ms) { const m = Math.max(0, Math.round(ms / 60000)); return `${Math.floor(m / 60)}ч ${String(m % 60).padStart(2, "0")}м`; }
+  function hue(s) { let h = 0; for (const c of String(s || "?")) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
+  function avatar(label, size) {
+    const h = hue(label), l = String(label || "?").replace(/[^\p{L}\p{N}]/gu, "").slice(0, size > 20 ? 2 : 1).toUpperCase() || "?";
+    return { bg: `radial-gradient(circle at 35% 30%, hsl(${h} 90% 72%), hsl(${h} 75% 48%))`, l };
   }
-  function readGistId() {
-    const raw = (location.hash || "").replace(/^#/, "");
-    let id = hashParams().get("g");
-    if (!id && /^[a-f0-9]{32}$/i.test(raw)) id = raw;
-    if (id) {
-      id = id.trim();
-      try { localStorage.setItem(STORAGE_KEY, id); } catch (_) {}
-      return id;
-    }
-    try { return localStorage.getItem(STORAGE_KEY); } catch (_) { return null; }
+  // FOMO links come only from the desk (links.py); used exactly as given.
+  const coin = (row, text, klass) => row && row.fomo_url
+    ? `<a class="${klass || ""}" href="${esc(row.fomo_url)}" target="_blank" rel="noopener">${esc(text)}</a>`
+    : `<span class="${klass || ""}">${esc(text)}</span>`;
+  const sym = (r) => String((r && (r.symbol || r.label || r.name)) || (r && r.mint ? r.mint.slice(0, 6) : "?")).replace(/\s*\(.*\)$/, "");
+  function banner(text, err) { const b = $("banner"); b.textContent = text || ""; b.classList.toggle("hidden", !text); b.classList.toggle("err", !!err); }
+  const EXIT = { stop: "стоп", trail: "trail", timeout: "време", trader_sold: "трейдърът продаде", sellall: "продай всичко", manual: "ръчно" };
+
+  // ------------------------------------------------------------ header
+  function renderHeader() {
+    const h = data.header || {}, s = data.session || {}, c = data.controls || {};
+    const gen = ts(data.generated_at);
+    const fresh = demo || (gen && Date.now() - gen.getTime() <= STALE_MS);
+    const main = (data.heartbeats || []).find((x) => x.agent === "main");
+    const pill = $("live-pill");
+    if (demo) { pill.className = "pill demo"; $("live-text").textContent = "Демо"; }
+    else if (!fresh) { pill.className = "pill stale"; $("live-text").textContent = "Остаряло"; }
+    else if (main && main.status !== "ok") { pill.className = "pill down"; $("live-text").textContent = "Спряло"; }
+    else { pill.className = "pill live"; $("live-text").textContent = "На живо"; }
+    const opens = (data.open_positions || []).length;
+    const nightNo = h.session_first_night_id ?? h.night_id;
+    $("sub-line").innerHTML = demo ? `<b>Демо сесия</b> · пример` :
+      `PumpPortal + копиране · <b>нощ ${esc(nightNo ?? "—")}</b> от ${esc(hm(h.started_at, true))} · ${opens} отворени`;
+    $("mode-pill").textContent = String(h.mode || "PAPER").toUpperCase();
+    $("demo-pill").classList.toggle("hidden", !demo);
+    $("quiet-pill").classList.toggle("hidden", !(c.quiet && c.quiet.on));
+    $("paused-pill").classList.toggle("hidden", !c.entries_paused);
+
+    const eq = num(s.equity_now) ?? num(h.current_stack) ?? 0;
+    const start = num(s.start_stack) ?? num(h.start_stack) ?? 200;
+    const ch = eq - start, pct = start ? (ch / start) * 100 : 0, mult = start ? eq / start : 1;
+    tweenText($("bal-value"), eq, (v) => money(v));
+    const k = cls(ch);
+    $("bal-change").innerHTML = `<span class="${k}">${k === "neg" ? "▼" : "▲"} ${money(ch)} (${Math.abs(pct).toLocaleString("en-US", { maximumFractionDigits: 2 })}%)</span>`;
+    const m = $("bal-mult"); m.textContent = mult.toFixed(2) + "×"; m.className = "mult " + (mult > 1.0001 ? "" : mult < 0.9999 ? "neg" : "neu");
+
+    const st = $("stop-btn");
+    if (c.sellall_url && !demo) { st.href = c.sellall_url; st.classList.remove("off"); }
+    else { st.removeAttribute("href"); st.classList.add("off"); }
+    $("stop-note").textContent = demo ? "В демото бутонът е изключен." :
+      `Отваря Telegram (@${c.bot_username || "бота"}). Там потвърждаваш с бутон. Само PAPER · ${opens} отворени.`;
   }
-  const clsPnl = (v) => (v == null || Number.isNaN(Number(v)) ? "neu" : Number(v) > 0 ? "pos" : Number(v) < 0 ? "neg" : "neu");
-  function ageLabel(ms) {
-    if (ms == null || Number.isNaN(ms)) return "—";
-    const s = Math.max(0, Math.floor(ms / 1000));
-    if (s < 60) return `${s} с`;
-    const m = Math.floor(s / 60);
-    if (m < 60) return `${m} мин`;
-    return `${Math.floor(m / 60)} ч ${m % 60} мин`;
-  }
-  function parseTs(v) { if (!v) return null; const d = new Date(v); return Number.isNaN(d.getTime()) ? null : d; }
-  function fmtSofia(value, withDate) {
-    const d = value instanceof Date ? value : parseTs(value);
-    if (!d) return "—";
-    const opts = withDate
-      ? { timeZone: ZONE, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }
-      : { timeZone: ZONE, hour: "2-digit", minute: "2-digit", hour12: false };
-    return new Intl.DateTimeFormat("bg-BG", opts).format(d);
-  }
-  function money(v, fallback) {
-    if (v == null || Number.isNaN(Number(v))) return fallback ?? "—";
-    const n = Number(v);
-    return `${n < 0 ? "-" : ""}$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }
-  function signedMoney(v) { const n = Number(v) || 0; return `${n >= 0 ? "+" : "-"}${money(Math.abs(n))}`; }
-  function signedPct(v) { if (v == null) return "—"; const n = Number(v); return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`; }
-  function coinAnchor(row, text) {
-    const label = escapeHtml(text || row.label || row.symbol || row.name || row.mint || "монета");
-    const url = row.fomo_url;
-    if (url && typeof url === "string" && url.startsWith("https://fomo.family/") && url.includes("r=savipww")) {
-      return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-    }
-    return label;
-  }
-  const empty = (title, text) => `<div class="empty"><b>${escapeHtml(title)}</b>${escapeHtml(text)}</div>`;
-  const REASON = { stop: "стоп", trail: "trail", timeout: "таймаут", pulled: "изтеглена ликвидност", sellall: "спри и продай", trader_sold: "трейдърът продаде" };
-  const srcTag = (r) => r && r.source_label ? ` <span class="src-tag">${escapeHtml(r.source_label)}</span>` : "";
-  function showBanner(text, isError) {
-    if (!text) { el.banner.classList.add("hidden"); el.banner.textContent = ""; return; }
-    el.banner.classList.remove("hidden");
-    el.banner.classList.toggle("error", !!isError);
-    el.banner.textContent = text;
-  }
-  function tween(node, from, to, ms, fmt) {
-    const t0 = performance.now();
-    const step = (t) => {
-      const k = Math.min(1, (t - t0) / ms);
-      const e = 1 - Math.pow(1 - k, 3);
-      node.textContent = fmt(from + (to - from) * e);
-      if (k < 1) requestAnimationFrame(step);
-    };
+  const prevVal = new WeakMap();
+  function tweenText(node, to, fmt) {
+    const from = prevVal.get(node); prevVal.set(node, to);
+    if (from == null || from === to || matchMedia("(prefers-reduced-motion: reduce)").matches) { node.textContent = fmt(to); return; }
+    const t0 = performance.now(), ms = 900;
+    const step = (t) => { const p = Math.min(1, (t - t0) / ms), e = 1 - Math.pow(1 - p, 3); node.textContent = fmt(from + (to - from) * e); if (p < 1) requestAnimationFrame(step); };
     requestAnimationFrame(step);
   }
 
-  // ------------------------------------------------------------ header / freshness
-  function updateFreshness() {
-    if (!lastData) return;
-    if (demo) {
-      el.freshness.textContent = "Демо режим · измислени данни";
-      el.liveBadge.className = "badge demo";
-      el.liveBadge.innerHTML = "DEMO";
-      return;
+  // ------------------------------------------------------------ equity chart
+  function series() {
+    const pts = (data.equity_series || []).map(([t, v]) => [ts(t), num(v)]).filter((p) => p[0] && p[1] != null);
+    const now = demo ? (pts.length ? pts[pts.length - 1][0] : new Date()) : (ts(data.generated_at) || new Date());
+    const span = RANGES[range];
+    let from = span === Infinity ? (pts[0] ? pts[0][0] : now) : new Date(now.getTime() - span);
+    const before = pts.filter((p) => p[0] < from);
+    let inR = pts.filter((p) => p[0] >= from);
+    if (before.length) inR.unshift([from, before[before.length - 1][1]]);
+    if (!inR.length && pts.length) inR = [[from, pts[pts.length - 1][1]]];
+    const last = inR.length ? inR[inR.length - 1][1] : num((data.session || {}).equity_now) ?? 200;
+    inR.push([now, num((data.session || {}).equity_now) ?? last]);
+    return { pts: inR, from, now };
+  }
+  function renderChart() {
+    const svg = $("equity"), W = svg.clientWidth || 600, H = svg.clientHeight || 250;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const { pts, from, now } = series();
+    const start = num((data.session || {}).start_stack) ?? 200;
+    const vals = pts.map((p) => p[1]);
+    let lo = Math.min(...vals), hi = Math.max(...vals);
+    // keep small moves visually small: the y-span is never tighter than 8% of the value
+    const minSpan = Math.abs(hi) * 0.08, mid = (hi + lo) / 2;
+    if (hi - lo < minSpan) { lo = mid - minSpan / 2; hi = mid + minSpan / 2; }
+    const pad = (hi - lo) * 0.12;
+    lo -= pad; hi += pad;
+    const t0 = from.getTime(), t1 = Math.max(now.getTime(), t0 + 1);
+    const top = 26, bot = H - 18;
+    const X = (t) => ((t - t0) / (t1 - t0)) * W;
+    const Y = (v) => bot - ((v - lo) / (hi - lo)) * (bot - top);
+    // step line (balance moves at fills), smooth enough with many points
+    let d = "";
+    pts.forEach((p, i) => { const x = X(p[0].getTime()).toFixed(1), y = Y(p[1]).toFixed(1); d += i ? ` L${x},${y}` : `M${x},${y}`; });
+    const area = `${d} L${W},${H} L0,${H} Z`;
+    const up = vals[vals.length - 1] >= vals[0];
+    const col = up ? "#3ddc68" : "#ff5a5f";
+    let marks = "";
+    for (const m of MARKS) {
+      const lvl = start * m; if (lvl > hi) break;
+      const hit = pts.find((p) => p[1] >= lvl); if (!hit) continue;
+      const x = X(hit[0].getTime()), y = Y(hit[1]);
+      marks += `<circle cx="${x}" cy="${y}" r="4.5" fill="#f5c84c"/><text class="mk" x="${x - 8}" y="${y - 2}" text-anchor="end">${m}×</text>`;
     }
-    const gen = parseTs(lastData.generated_at);
-    if (!gen) { el.freshness.textContent = "Няма време на снимката"; return; }
-    const age = Date.now() - gen.getTime();
-    const stale = age > STALE_MS;
-    el.liveBadge.className = "badge " + (stale ? "live-stale" : "live-ok");
-    el.liveBadge.innerHTML = stale ? `<span class="dot"></span>ОСТАРЯЛО` : `<span class="dot pulse"></span>НА ЖИВО`;
-    el.freshness.classList.toggle("stale", stale);
-    el.freshness.innerHTML = `Обновено преди <strong>${escapeHtml(ageLabel(age))}</strong> · ${escapeHtml(fmtSofia(gen, true))} (Europe/Sofia)`;
-    if (stale) showBanner("Данните са остарели с повече от 3 минути. Компютърът на бюрото може да е замръзнал или gist_push да е спрял.", false);
+    const base = start >= lo && start <= hi ? `<line x1="0" x2="${W}" y1="${Y(start)}" y2="${Y(start)}" stroke="#2c5a4a" stroke-dasharray="3 5"/><text x="${W - 6}" y="${Y(start) - 5}" text-anchor="end" fill="#4f7d6c" font-size="10">старт ${money(start, 0)}</text>` : "";
+    const lx = X(pts[pts.length - 1][0].getTime()), ly = Y(pts[pts.length - 1][1]);
+    svg.innerHTML = `<defs><linearGradient id="eqg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity="${up ? .28 : .16}"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+      ${base}<path d="${area}" fill="url(#eqg)"/><path d="${d}" fill="none" stroke="${col}" stroke-width="2.2" stroke-linejoin="round"/>${marks}
+      <circle cx="${lx}" cy="${ly}" r="4" fill="#fff"/><circle cx="${lx}" cy="${ly}" r="9" fill="#fff" opacity=".15"/>`;
+    const s = data.session || {}, h = data.header || {};
+    const nightStart = ts(h.started_at);
+    $("chart-tl").textContent = demo ? "◉ демо · примерна нощ" : `◉ бюрото работи · ${nightStart ? dur(Date.now() - nightStart.getTime()) : "—"} тази нощ`;
+    const nightPct = vals[0] ? ((vals[vals.length - 1] - vals[0]) / vals[0]) * 100 : 0;
+    const tr = $("chart-tr"); tr.textContent = `${range === "all" ? "всичко" : "период"} ${spct(nightPct, 2)}`; tr.className = "chart-tr" + (nightPct < -0.005 ? " neg" : "");
+    const ticks = [];
+    for (let i = 1; i <= 4; i++) ticks.push(`<span>${hm(new Date(t0 + ((t1 - t0) * i) / 5), range === "1w" || range === "all")}</span>`);
+    $("chart-x").innerHTML = ticks.join("");
   }
 
-  function renderHeader(data) {
-    const h = data.header || {};
-    const c = data.controls || {};
-    const mode = (h.mode || "PAPER").toUpperCase();
-    el.modeBadge.className = "badge " + (mode === "LIVE" ? "live" : "paper");
-    el.modeBadge.innerHTML = `<span class="dot"></span>${escapeHtml(mode)}`;
-    const q = c.quiet || {};
-    el.quietBadge.classList.toggle("hidden", !q.on);
-    el.quietBadge.textContent = q.on ? `ТИХ РЕЖИМ · ${q.held || 0} задържани` : "";
-    el.pausedBadge.classList.toggle("hidden", !c.entries_paused);
-    const nightBit = h.night_in_progress ? "нощта тече" : "нощта е приключена";
-    el.nightSub.textContent = demo ? "Демо · измислена сесия" : `Нощ ${h.night_id ?? "—"} · ${nightBit} · старт ${fmtSofia(h.started_at, true)}`;
+  // ------------------------------------------------------------ agents
+  function hb(agent) { return (data.heartbeats || []).find((x) => x.agent === agent) || {}; }
+  function stRow(status, text) { const k = status === "ok" ? "" : status === "warn" ? "warn" : "down"; return `<div class="ag-st ${k}"><i></i>${esc(text)}</div>`; }
+  function av(label) { const a = avatar(label, 18); return `<span class="av" style="background:${a.bg}">${esc(a.l)}</span>`; }
+  function renderAgents() {
+    const sc = data.scanner || {}, cp = data.copy || {}, h = data.header || {};
+    const opens = data.open_positions || [];
+    const risk = h.risk || {}, tk = h.ticket || {};
+    const cards = [];
+    // Scanner
+    const items = (sc.items || []).slice(0, 4);
+    const scRows = items.length ? items.map((i) => {
+      const badge = i.score != null ? `<span class="sc-badge">${esc(Math.round(i.score))}</span>`
+        : i.state === "kill" ? `<span class="sc-badge kill">${esc(i.liq_display ? "liq " + i.liq_display : (i.reason || "отказ").slice(0, 12))}</span>`
+        : i.state === "pass" ? `<span class="sc-badge">мина</span>` : `<span class="sc-badge wait">чака</span>`;
+      return `<div class="ag-row">${av(sym(i))}${coin(i, sym(i), "nm")}${badge}</div>`;
+    }).join("") : `<div class="ag-empty">Чака нова миграция от PumpPortal.</div>`;
+    const scLast = sc.last_scan_ts ? `последно ${hm(sc.last_scan_ts)} · ` : "";
+    cards.push(`<div class="ag"><div class="ag-h"><span class="ag-ico sc">⌕</span>Скенер</div>${stRow(sc.status, sc.state_label || "—")}${scRows}
+      <div class="ag-foot">${esc(scLast)}${esc(sc.scans_count ?? 0)} проверени · праг ликв. ${esc(sc.min_liq_display || "$40K")}</div></div>`);
+    // Copy
+    const traders = (cp.traders || []).filter((t) => t.active);
+    const per = cp.per_trader || [];
+    const lastCopy = (data.feed || []).find((f) => f.source_label && f.side === "buy");
+    const cpRows = per.slice(0, 3).map((p) => `<div class="ag-row">${av(p.handle)}<span class="nm" style="text-transform:none">${esc(p.handle)}</span><span class="${cls(p.pnl_usd)}">${esc(smoney(p.pnl_usd))}</span></div>`).join("")
+      || traders.slice(0, 3).map((t) => `<div class="ag-row">${av(t.handle)}<a class="nm" style="text-transform:none" href="${esc(t.profile_url)}" target="_blank" rel="noopener">${esc(t.handle)}</a><span class="muted">#${esc(t.rank ?? "—")}</span></div>`).join("");
+    const cpHb = hb("copywatch");
+    cards.push(`<div class="ag"><div class="ag-h"><span class="ag-ico cp">⇄</span>Копиране</div>${stRow(cpHb.status, `следи ${traders.length} трейдъри`)}${cpRows}
+      <div class="ag-foot">${lastCopy ? `последно: ${esc(sym(lastCopy))} · ${esc(hm(lastCopy.ts))}` : "още няма копие тази нощ"} · $10 на покупка</div></div>`);
+    // Exit / Risk
+    const rk = hb("risk");
+    const exRows = opens.slice(0, 3).map((p) => `<div class="ag-row">${av(sym(p))}${coin(p, sym(p), "nm")}<span class="${cls(p.unrealized_pnl_pct)}">${esc(spct(p.unrealized_pnl_pct))}</span></div>`).join("")
+      || `<div class="ag-empty">Няма отворени позиции. Стоп −${esc(risk.stop_pct ?? 6)}%, trail тръгва от +${esc(risk.trail_start_pct ?? 20)}%.</div>`;
+    const trailing = opens.filter((p) => p.trail_active).length;
+    cards.push(`<div class="ag"><div class="ag-h"><span class="ag-ico ex">⇥</span>Изход</div>${stRow(rk.status, opens.length ? `${opens.length} отворени · ${trailing} trail` : "дебне")}${exRows}
+      <div class="ag-chip">trail ${esc(risk.trail_pct ?? 12)}% · стоп ${esc(risk.stop_pct ?? 6)}%</div></div>`);
+    // Sizer
+    const ex = hb("executor");
+    cards.push(`<div class="ag"><div class="ag-h"><span class="ag-ico sz">◎</span>Размер</div>${stRow(ex.status, "готов")}
+      <div class="ag-big">${esc(money(tk.ticket_usd))}</div><div class="ag-kv"><span>на вход</span><b>${esc((tk.ticket_pct_of_stack ?? 0).toFixed ? tk.ticket_pct_of_stack.toFixed(1) : tk.ticket_pct_of_stack)}% от стека</b></div>
+      <div class="ag-kv"><span>стек</span><b>${esc(money(h.current_stack))}</b></div><div class="ag-kv"><span>копие</span><b>$10.00</b></div>
+      <div class="ag-foot">${tk.bumped ? `вдигнат до минимум ${esc(money(tk.min_ticket_usd))}` : `${esc(tk.stack_pct ?? 8)}% от стека`}</div></div>`);
+    // Auditor + Analyst (compact)
+    const au = hb("auditor"), an = hb("analyst"), p = data.pipeline || {}, a = p.auditor || {};
+    cards.push(`<div class="ag"><div class="ag-h"><span class="ag-ico au">✓</span>Одит</div>${stRow(au.status === "ok" && an.status === "ok" ? "ok" : (au.status === "down" || an.status === "down") ? "down" : "warn", "9 проверки + оценка")}
+      <div class="ag-kv"><span>минали</span><b>${esc(a.passed_count ?? 0)}</b></div><div class="ag-kv"><span>отхвърлени</span><b>${esc(a.rejected_count ?? 0)}</b></div>
+      <div class="ag-kv"><span>оценени</span><b>${esc(p.verdicts_count ?? 0)}</b></div><div class="ag-foot">${esc(au.last_action || "чака монета от скенера")}</div></div>`);
+    $("agents").innerHTML = cards.join("");
+    const core = ["scanner", "auditor", "analyst", "executor", "risk", "copywatch", "telegram"];
+    const ok = core.filter((x) => hb(x).status === "ok").length;
+    $("running").textContent = demo ? `${core.length} работят` : `${ok} работят`;
+    $("agents-pager").innerHTML = cards.map((_, i) => `<i class="${i === 0 ? "on" : ""}"></i>`).join("");
   }
+  $("agents").addEventListener("scroll", (e) => {
+    const n = e.target.children.length; if (!n) return;
+    const i = Math.round(e.target.scrollLeft / (e.target.scrollWidth / n));
+    [...$("agents-pager").children].forEach((d, j) => d.classList.toggle("on", j === i));
+  }, { passive: true });
 
-  // ------------------------------------------------------------ desk view
-  function sessionOf(data) {
-    const s = data.session || {};
-    const h = data.header || {};
-    const start = Number(s.start_stack ?? h.start_stack ?? 200);
-    const cur = Number(s.current_stack ?? h.current_stack ?? start);
-    return { ...s, start, cur, change: cur - start, pct: start ? (cur - start) / start * 100 : 0, mult: start ? cur / start : 1 };
+  // ------------------------------------------------------------ feed
+  function feedRow(f) {
+    const label = sym(f), a = avatar(label, 46), sell = f.side === "sell";
+    const verb = sell ? "Продаде" : "Купи";
+    const sub = [f.source_label ? `<span class="src">${esc(f.source_label)}</span>` : "бюрото", esc(hm(f.ts, !sameDay(f.ts)))].join(" · ");
+    const right = sell
+      ? `<div class="fv"><span class="pnlchip ${cls(f.pnl_usd)}">${esc(smoney(f.pnl_usd))}</span></div><div class="fm">${esc(EXIT[f.exit_reason] || f.exit_reason || "")}${f.pnl_pct != null ? " · " + esc(spct(f.pnl_pct)) : ""}</div>`
+      : `<div class="fv">${esc(money(f.size_usd))}</div><div class="fm">${f.mc_usd ? esc(money(f.mc_usd, 0)) + " MC" : esc(f.price_display || "")}</div>`;
+    return `<div class="fi"><div class="fav" style="background:${a.bg}">${esc(a.l)}<span class="side ${sell ? "sell" : ""}">${sell ? "↘" : "↗"}</span></div>
+      <div class="fb"><div class="ft">${esc(verb)} ${coin(f, label.toUpperCase())}</div><div class="fs">${sub}</div></div><div class="fr">${right}</div></div>`;
   }
-
-  let shownBal = null;
-  function renderHero(data) {
-    const s = sessionOf(data);
-    const from = shownBal == null ? s.start : shownBal;
-    tween(el.balValue, from, s.cur, shownBal == null ? 900 : 600, money);
-    shownBal = s.cur;
-    el.balChange.className = "hero-change " + clsPnl(s.change);
-    el.balChange.textContent = `${signedMoney(s.change)} · ${signedPct(s.pct)} · ×${s.mult.toFixed(2)} от ${money(s.start)} старт`;
-    const t = data.totals || {};
-    const eq = s.equity_now != null && Math.abs(s.equity_now - s.cur) >= 0.01 ? `<div><span>С отворените</span><b>${escapeHtml(money(s.equity_now))}</b></div>` : "";
-    el.heroSide.innerHTML = `
-      <div><span>Сделки</span><b>${escapeHtml(String(s.trades ?? t.closed_count ?? 0))}</b></div>
-      <div><span>Зелени</span><b>${s.green_pct == null ? "—" : escapeHtml(s.green_pct + "%")}</b></div>
-      <div><span>Отворени</span><b>${escapeHtml(String(t.open_count ?? 0))}</b></div>${eq}`;
+  function sameDay(v) { const d = ts(v); return d && hm(d, true).slice(0, 5) === hm(new Date(), true).slice(0, 5); }
+  function renderFeed() {
+    const rows = data.feed || [];
+    $("feed-all").textContent = feedAll ? "По-малко" : "Виж всички";
+    $("feed-all").classList.toggle("hidden", rows.length <= 5);
+    $("feed").innerHTML = rows.length ? rows.slice(0, feedAll ? 30 : 5).map(feedRow).join("")
+      : `<div class="empty"><b>Още няма сделки</b>Скенерът и копирането работят. Първата PAPER покупка ще се появи тук.</div>`;
   }
-
-  function seriesPoints(data) {
-    const pts = (data.equity_series || []).map(([ts, v]) => ({ t: parseTs(ts), y: Number(v) })).filter((p) => p.t && Number.isFinite(p.y));
-    const s = sessionOf(data);
-    const now = parseTs(data.generated_at);
-    if (now && (!pts.length || pts[pts.length - 1].t < now)) pts.push({ t: now, y: Number(s.equity_now ?? s.cur) });
-    return pts;
-  }
-
-  function chartOptions(pts, animate) {
-    return {
-      responsive: true, maintainAspectRatio: false, animation: animate ? { duration: 350 } : false,
-      plugins: {
-        legend: { display: false },
-        tooltip: { callbacks: {
-          title: (items) => { const p = pts[items[0]?.dataIndex]; return p ? `${fmtSofia(p.t, true)} (Europe/Sofia)` : ""; },
-          label: (item) => money(item.raw),
-        } },
-      },
-      scales: {
-        x: { ticks: { color: "#8b97a8", maxRotation: 0, autoSkip: true, maxTicksLimit: 6 }, grid: { color: "rgba(255,255,255,0.04)" } },
-        y: { ticks: { color: "#8b97a8", callback: (v) => "$" + Number(v).toFixed(0) }, grid: { color: "rgba(255,255,255,0.05)" } },
-      },
-    };
-  }
-  function dataset(values) {
-    const up = values.length >= 2 ? values[values.length - 1] >= values[0] : true;
-    return {
-      data: values, borderColor: up ? "#3ddc84" : "#ff5c6c",
-      backgroundColor: up ? "rgba(61,220,132,0.12)" : "rgba(255,92,108,0.12)",
-      fill: true, tension: 0.25, pointRadius: values.length <= 20 ? 2.5 : 0, pointHoverRadius: 5, borderWidth: 2,
-    };
-  }
-
-  function renderEquity(data) {
-    const pts = seriesPoints(data);
-    const ctx = $("equity");
-    if (!ctx || typeof Chart === "undefined") return;
-    const span = pts.length > 1 ? pts[pts.length - 1].t - pts[0].t : 0;
-    const labels = pts.map((p) => fmtSofia(p.t, span > 20 * 3600 * 1000));
-    const values = pts.map((p) => p.y);
-    const flat = values.every((v) => Math.abs(v - values[0]) < 0.005);
-    el.equityNote.textContent = flat
-      ? "Кривата е равна, защото още няма затворени сделки. Тя се движи с реалния PAPER стек и отворените позиции."
-      : `${pts.length} точки · стек плюс текущата стойност на отворените позиции`;
-    if (equityChart) {
-      equityChart.data.labels = labels;
-      equityChart.data.datasets[0] = dataset(values);
-      equityChart.options = chartOptions(pts, false);
-      equityChart.update("none");
-    } else {
-      equityChart = new Chart(ctx, { type: "line", data: { labels, datasets: [dataset(values)] }, options: chartOptions(pts, false) });
-    }
-  }
-
-  function renderAgents(data) {
-    const list = (data.heartbeats || []).filter((h) => h.agent !== "main");
-    if (!list.length) { el.agents.innerHTML = empty("Няма сигнали от агенти", "Бюрото още не е записало heartbeat."); return; }
-    const main = (data.heartbeats || []).find((h) => h.agent === "main");
-    const order = ["scanner", "auditor", "analyst", "executor", "risk", "telegram"];
-    list.sort((a, b) => order.indexOf(a.agent) - order.indexOf(b.agent));
-    const NAME = { scanner: "Scanner", auditor: "Auditor", analyst: "Analyst", executor: "Executor", risk: "Risk", telegram: "Telegram" };
-    const paused = (data.controls?.paused_agents || []).map((x) => String(x).toLowerCase());
-    el.agents.innerHTML = list.map((h) => {
-      let st = h.status || "missing";
-      let label = st === "ok" ? "работи" : st === "stale" ? "изостава" : st === "down" ? "спрял" : "няма сигнал";
-      if (paused.includes(h.agent)) { st = "stale"; label = "на пауза"; }
-      const age = h.age_s == null ? "" : `сигнал преди ${ageLabel(h.age_s * 1000)}`;
-      const last = h.last_action ? `${h.last_action_sofia ? h.last_action_sofia + " · " : ""}${h.last_action}` : "още няма действие тази сесия";
-      return `<div class="agent ${escapeHtml(st)}">
-        <div class="agent-top"><i></i><b>${escapeHtml(NAME[h.agent] || h.agent)}</b><span class="state">${escapeHtml(label)}</span></div>
-        <div class="role">${escapeHtml(h.role || "")}</div>
-        <div class="last">${escapeHtml(last)}</div>
-        <div class="age">${escapeHtml(age)}</div>
-      </div>`;
-    }).join("") + (main && main.status !== "ok" && !demo ? `<div class="agent down"><div class="agent-top"><i></i><b>main.py</b><span class="state">${escapeHtml(main.label || "")}</span></div><div class="last">Процесът не е подал сигнал скоро.</div></div>` : "");
-  }
-
-  function renderOpen(data) {
-    const rows = data.open_positions || [];
-    if (!rows.length) { el.openList.innerHTML = empty("Няма отворени позиции", "Когато бюрото влезе в PAPER сделка, тук ще се вижда живият P&L."); return; }
-    el.openList.innerHTML = rows.map((r) => {
-      const rem = r.remaining_s == null ? "" : ` · таймаут след ${ageLabel(r.remaining_s * 1000)}`;
-      return `<div class="pos-row">
-        <div class="pos-main"><div class="pos-name">${coinAnchor(r)}${srcTag(r)}</div>
-          <div class="pos-sub">${escapeHtml(r.size_display || money(r.size_usd))} · вход ${escapeHtml(r.entry_price_display || "—")} · сега ${escapeHtml(r.last_price_display || "—")}</div>
-          <div class="pos-sub">${escapeHtml(r.trail_state || "")}${escapeHtml(rem)}</div></div>
-        <div class="pos-pnl ${clsPnl(r.unrealized_pnl_usd)}">${escapeHtml(r.unrealized_pnl_usd == null ? "—" : signedMoney(r.unrealized_pnl_usd))}
-          <span>${r.unrealized_pnl_pct == null ? "" : escapeHtml(signedPct(r.unrealized_pnl_pct))}</span></div>
-      </div>`;
-    }).join("");
-  }
-
-  function renderFills(data) {
-    const rows = data.fills || [];
-    if (!rows.length) { el.fills.innerHTML = empty("Още няма сделки", "Покупките и продажбите в PAPER ще се появяват тук."); return; }
-    el.fills.innerHTML = rows.slice(0, 12).map((f) => {
-      const sell = f.side === "sell";
-      const right = sell ? `<span class="${clsPnl(f.pnl_usd)}">${escapeHtml(signedMoney(f.pnl_usd))}</span>` : `<span class="muted">${escapeHtml(money(f.size_usd))}</span>`;
-      const why = sell && f.exit_reason ? ` · ${REASON[f.exit_reason] || f.exit_reason}` : "";
-      return `<div class="fill"><time>${escapeHtml(fmtSofia(f.ts, false))}</time>
-        <span class="side ${sell ? "sell" : "buy"}">${sell ? "продажба" : "покупка"}</span>
-        <span class="fname">${coinAnchor(f)}${srcTag(f)}<small>${escapeHtml(why)}</small></span>${right}</div>`;
-    }).join("");
-  }
-
-  function renderFunnel(data) {
-    const p = data.pipeline || {};
-    const aud = p.auditor || {};
-    const execN = (data.totals?.open_count || 0) + (data.totals?.closed_count || 0);
-    const steps = [
-      ["Скенер", p.migrations_count ?? 0, `${p.scans_pass ?? 0} минали · ${p.scans_kill ?? 0} отрязани`],
-      ["Одитор", aud.mints ?? 0, `${aud.passed_count ?? 0} минали · ${aud.rejected_count ?? 0} отхвърлени`],
-      ["Анализатор", (p.verdicts_count ?? 0) + (p.analyst_skips_count ?? 0), `${p.analyst_rejects_count ?? 0} отказа`],
-      ["Изпълнител", execN, `${data.totals?.open_count ?? 0} отв. · ${data.totals?.closed_count ?? 0} затв.`],
-    ];
-    el.funnel.innerHTML = steps.map(([name, n, bits]) =>
-      `<div class="funnel-step"><div class="name">${escapeHtml(name)}</div><div class="n">${escapeHtml(String(n))}</div><div class="bits">${escapeHtml(bits)}</div></div>`).join("");
-    const reasons = [];
-    for (const m of p.migrations || []) {
-      const sc = m.scan;
-      if (sc && (sc.verdict === "kill" || sc.verdict === "wait")) reasons.push({ row: m, why: `Скенер: ${sc.reason || sc.verdict}` });
-    }
-    for (const r of aud.rejected || []) reasons.push({ row: r, why: `Одитор · слой ${r.failed_layer ?? "?"} ${r.failed_layer_name || ""}: ${r.failed_value || ""}` });
-    for (const r of p.analyst_rejects || []) reasons.push({ row: r, why: `Анализатор: ${r.reason || "отказ"}` });
-    if (!reasons.length) { el.rejects.innerHTML = demo ? "" : `<div class="empty">Няма записани откази в тази нощ.</div>`; return; }
-    el.rejects.innerHTML = reasons.slice(-8).reverse().map((x) =>
-      `<div class="reason"><span>${coinAnchor(x.row)}</span><span class="why">${escapeHtml(x.why)}</span></div>`).join("");
-  }
-
-  function renderFeed(data) {
-    const rows = (data.activity || []).slice().reverse();
-    if (!rows.length) { el.feed.innerHTML = empty("Тихо засега", demo ? "В демото няма поток от събития." : "Активността ще се появи при миграции, откази и сделки."); return; }
-    el.feed.innerHTML = rows.map((a) => {
-      const title = a.fomo_url ? `${coinAnchor(a)} · ${escapeHtml(a.title || "")}` : escapeHtml(a.title || a.label || "събитие");
-      return `<div class="item"><time>${escapeHtml(a.ts_sofia_short || fmtSofia(a.ts))}</time>
-        <div><span class="kind ${escapeHtml((a.kind || "").toLowerCase())}">${escapeHtml(a.kind || a.agent || "")}</span>
-        <span class="title">${title}</span><div class="sub">${escapeHtml(a.subtitle || a.value || "")}</div></div></div>`;
-    }).join("");
-  }
-
-  function renderClosed(data) {
-    const rows = data.closed_trades || [];
-    if (!rows.length) { el.closed.innerHTML = empty("Няма затворени сделки", "Таблицата ще се напълни след първата реална PAPER сделка. Не се показват примерни данни."); return; }
-    el.closed.innerHTML = `<table><thead><tr><th>Монета</th><th>Затворена</th><th class="num">Размер</th><th class="num">P&amp;L</th><th>Причина</th></tr></thead><tbody>${
-      rows.slice().reverse().map((r) => `<tr><td>${coinAnchor(r)}</td><td>${escapeHtml(fmtSofia(r.closed_at, true))}</td>
-      <td class="num">${escapeHtml(money(r.size_usd))}</td>
-      <td class="num ${clsPnl(r.pnl_usd)}">${escapeHtml(signedMoney(r.pnl_usd))}${r.pnl_pct == null ? "" : ` (${escapeHtml(signedPct(r.pnl_pct))})`}</td>
-      <td>${escapeHtml(REASON[r.exit_reason] || r.exit_reason || "—")}${srcTag(r)}</td></tr>`).join("")}</tbody></table>`;
-  }
-
-  function renderStop(data) {
-    const c = data.controls || {};
-    el.stopBar.classList.remove("hidden");
-    if (demo) {
-      el.stopBtn.href = "#";
-      el.stopBtn.removeAttribute("target");
-      el.stopBtn.onclick = (e) => { e.preventDefault(); alert("Демо: в истинския изглед този бутон отваря Telegram бота, който иска потвърждение."); };
-      el.stopNote.textContent = "Демо. В истинския изглед отваря Telegram бота и иска потвърждение.";
-      return;
-    }
-    el.stopBtn.onclick = null;
-    const url = c.sellall_url;
-    if (url && /^https:\/\/t\.me\/[A-Za-z0-9_]+\?start=sellall$/.test(url)) {
-      el.stopBtn.href = url;
-      el.stopBtn.setAttribute("target", "_blank");
-      el.stopBtn.classList.remove("disabled");
-      const n = data.totals?.open_count || 0;
-      el.stopNote.textContent = `Отваря Telegram (@${c.bot_username}). Там потвърждаваш с бутон. Само PAPER · ${n} отворени.`;
-    } else {
-      el.stopBtn.href = "#";
-      el.stopBtn.classList.add("disabled");
-      el.stopNote.textContent = "Няма линк към бота в данните. Напиши /sellall на бота в Telegram.";
-    }
-  }
+  $("feed-all").addEventListener("click", () => { feedAll = !feedAll; renderFeed(); });
 
   // ------------------------------------------------------------ replay
-  const rp = { idx: 0, playing: false, timer: null, speed: 1, trades: [], shownPnl: 0, built: false };
-  function replayTrades(data) {
-    return ((data.session || {}).replay || []).slice().sort((a, b) => (a.closed_at < b.closed_at ? -1 : 1));
+  const rp = { trades: [], i: 0, timer: null, t0: 0, t1: 0, start: 200 };
+  function buildReplay() {
+    const s = data.session || {}, h = data.header || {};
+    const sessStart = ts(h.started_at);
+    let trades = (s.replay || []).filter((t) => t.closed_at).sort((a, b) => (a.closed_at < b.closed_at ? -1 : 1));
+    if (sessStart && !demo) trades = trades.filter((t) => ts(t.closed_at) >= sessStart);
+    rp.trades = trades;
+    rp.t0 = (sessStart || (trades[0] ? ts(trades[0].opened_at) : new Date())).getTime();
+    rp.t1 = demo && trades.length ? ts(trades[trades.length - 1].closed_at).getTime() + 20 * 60e3 : (ts(data.generated_at) || new Date()).getTime();
+    const before = (s.replay || []).filter((t) => ts(t.closed_at) && ts(t.closed_at).getTime() < rp.t0).reduce((a, t) => a + (num(t.pnl_usd) || 0), 0);
+    rp.start = (num(s.start_stack) ?? 200) + before;
+    $("rp-night").textContent = demo ? "демо нощ" : `нощ ${h.session_first_night_id ?? h.night_id ?? "—"}`;
+    $("rp-span").textContent = `${hm(new Date(rp.t0), true)} → ${hm(new Date(rp.t1), true)} · ${dur(rp.t1 - rp.t0)} будно бюро`;
+    stopReplay(); rp.i = trades.length; drawReplay();
   }
-  function buildReplay(data) {
-    rp.trades = replayTrades(data);
-    const s = sessionOf(data);
-    const n = rp.trades.length;
-    $("rp-empty").innerHTML = n ? "" : empty("Още няма затворени сделки за повторение",
-      demo ? "" : "Повторението ще оживее след първата PAPER сделка. Отвори демото с &demo=1 в адреса, за да видиш как изглежда.");
-    $("rp-play").disabled = !n;
-    resetReplay(s.start);
-    rp.built = true;
+  function curvePoint(p) { // gentle S path across the stage, evening (top) to morning (bottom)
+    const x = 255 + 105 * Math.sin(p * Math.PI * 1.6) * (1 - p * 0.3), y = 30 + p * 360; return [x, y];
   }
-  function resetReplay(start) {
-    clearTimeout(rp.timer);
-    rp.idx = 0; rp.playing = false; rp.shownPnl = 0;
-    $("rp-play").textContent = "▶ Пусни";
-    $("rp-pnl").textContent = "$0.00";
-    $("rp-pnl").className = "replay-pnl neu";
-    $("rp-popups").innerHTML = "";
-    const st = start ?? sessionOf(lastData || {}).start;
-    $("rp-bal").textContent = `Стек ${money(st)}`;
-    updateProgress();
-    drawReplayChart(st);
-    renderBoard([]);
+  function drawReplay() {
+    const done = rp.trades.slice(0, rp.i), total = rp.trades.length;
+    const pnl = done.reduce((a, t) => a + (num(t.pnl_usd) || 0), 0);
+    const tNow = rp.i >= total ? rp.t1 : ts(rp.trades[Math.max(0, rp.i - 1)]?.closed_at)?.getTime() ?? rp.t0;
+    const prog = rp.i === 0 ? 0 : Math.min(1, (tNow - rp.t0) / Math.max(1, rp.t1 - rp.t0));
+    const big = $("rp-pnl"); big.textContent = (pnl < 0 ? "−" : "+") + money(pnl); big.className = "rp-big " + (Math.abs(pnl) < 0.005 ? "neu" : pnl > 0 ? "" : "neg");
+    const last = done[done.length - 1];
+    $("rp-sub").textContent = `${done.length} продажби` + (last ? ` · последна ${hm(last.closed_at)} · ${sym(last)}` : " · тиха нощ засега");
+    // path
+    const N = 80; let all = "", seg = "";
+    for (let k = 0; k <= N; k++) { const [x, y] = curvePoint(k / N); all += (k ? " L" : "M") + x.toFixed(1) + "," + y.toFixed(1); if (k / N <= prog) seg += (k ? " L" : "M") + x.toFixed(1) + "," + y.toFixed(1); }
+    const dots = done.map((t) => { const p = Math.min(1, (ts(t.closed_at).getTime() - rp.t0) / Math.max(1, rp.t1 - rp.t0)); const [x, y] = curvePoint(p); const off = (num(t.pnl_usd) >= 0 ? 1 : -1) * 22;
+      return `<circle cx="${x + off}" cy="${y}" r="6" fill="none" stroke="${num(t.pnl_usd) >= 0 ? "#3ddc68" : "#ff5a5f"}" stroke-width="2"/>`; }).join("");
+    const [hx, hy] = curvePoint(prog), [sx, sy] = curvePoint(0), [ex, ey] = curvePoint(1);
+    $("rp-path").innerHTML = `<path d="${all}" fill="none" class="path-todo" stroke-width="1.5" stroke-dasharray="2 5"/><path d="${seg}" fill="none" class="path-done" stroke-width="3" stroke-linecap="round"/>${dots}
+      <circle cx="${sx}" cy="${sy}" r="5" fill="#000" stroke="#fff" stroke-width="2"/><text x="${sx + 12}" y="${sy + 4}" fill="#fff" font-size="12" font-weight="700">СТАРТ</text><text x="${sx + 12}" y="${sy + 18}" fill="#8a9199" font-size="10">${esc(hm(new Date(rp.t0)))}</text>
+      <circle cx="${ex}" cy="${ey}" r="5" fill="#000" stroke="#fff" stroke-width="2"/><text x="${ex + 12}" y="${ey + 4}" fill="#fff" font-size="12" font-weight="700">${demo ? "КРАЙ" : "СЕГА"}</text><text x="${ex + 12}" y="${ey + 18}" fill="#8a9199" font-size="10">${esc(hm(new Date(rp.t1)))}</text>
+      <circle cx="${hx}" cy="${hy}" r="9" fill="#5ea2ff" opacity=".25"/><circle cx="${hx}" cy="${hy}" r="5" fill="#fff"/>`;
+    $("rp-chip-v").textContent = money(rp.start + pnl);
+    $("rp-chip-t").textContent = hm(new Date(tNow));
+    let bal = rp.start; const pts = [[0, bal]]; done.forEach((t, k) => { bal += num(t.pnl_usd) || 0; pts.push([k + 1, bal]); });
+    const vs = pts.map((p) => p[1]), lo = Math.min(...vs), hi = Math.max(...vs) + 0.0001, n = Math.max(1, pts.length - 1);
+    $("rp-spark").innerHTML = `<path d="${pts.map((p, k) => `${k ? "L" : "M"}${(p[0] / n) * 200},${36 - ((p[1] - lo) / (hi - lo)) * 30}`).join(" ")}" fill="none" stroke="#3ddc68" stroke-width="2"/>`;
+    $("rp-bar").style.width = (prog * 100).toFixed(1) + "%";
+    $("rp-clock").textContent = `${hm(new Date(tNow))} · повторение`;
+    $("rp-count").textContent = `${done.length} от ${total}`;
+    $("rp-list").innerHTML = done.length ? done.slice().reverse().map((t) => feedRow({ ...t, side: "sell", ts: t.closed_at, source_label: t.source_label })).join("")
+      : `<div class="empty"><b>${total ? "Натисни „Пусни“" : "Още няма затворени сделки тази нощ"}</b>${total ? "Сделките ще се появят една по една." : "Повторението оживява след първата продажба. Отвори демото с #demo=1, за да видиш как изглежда."}</div>`;
+    $("rp-play").textContent = rp.timer ? "❚❚ Пауза" : "▶ Пусни";
   }
-  function updateProgress() {
-    const n = rp.trades.length;
-    $("rp-bar").style.width = n ? `${(rp.idx / n) * 100}%` : "0%";
-    $("rp-count").textContent = `${rp.idx} от ${n} сделки`;
-    const t = rp.trades[rp.idx - 1];
-    $("rp-time").textContent = t ? `${fmtSofia(t.closed_at, true)} (Europe/Sofia)` : "—";
-  }
-  function drawReplayChart(start) {
-    const ctx = $("rp-chart");
-    if (!ctx || typeof Chart === "undefined") return;
-    const pts = [{ t: parseTs(rp.trades[0]?.opened_at) || new Date(), y: start }];
-    let eq = start;
-    for (let i = 0; i < rp.idx; i++) { eq += Number(rp.trades[i].pnl_usd) || 0; pts.push({ t: parseTs(rp.trades[i].closed_at), y: eq }); }
-    const labels = pts.map((p) => fmtSofia(p.t, false));
-    const values = pts.map((p) => Math.round(p.y * 100) / 100);
-    if (replayChart) {
-      replayChart.data.labels = labels;
-      replayChart.data.datasets[0] = dataset(values);
-      replayChart.options = chartOptions(pts, true);
-      replayChart.update();
-    } else {
-      replayChart = new Chart(ctx, { type: "line", data: { labels, datasets: [dataset(values)] }, options: chartOptions(pts, true) });
-    }
-  }
-  function renderBoard(trades, target) {
-    const node = target || $("rp-board");
-    const best = trades.slice().sort((a, b) => b.pnl_usd - a.pnl_usd).slice(0, 5);
-    if (!best.length) { node.innerHTML = empty("Още няма", target ? "Няма затворени сделки в тази сесия." : "Пусни повторението, за да се пълни класацията."); return; }
-    node.innerHTML = best.map((t, i) => `<div class="board-row"><span class="rank">${i + 1}</span>
-      <span class="bname">${coinAnchor(t, t.label)}<small>${escapeHtml(REASON[t.exit_reason] || t.exit_reason || "")} · ${escapeHtml(fmtSofia(t.closed_at, false))}</small></span>
-      <span class="${clsPnl(t.pnl_usd)}">${escapeHtml(signedMoney(t.pnl_usd))}<small>${t.pnl_pct == null ? "" : escapeHtml(signedPct(t.pnl_pct))}</small></span></div>`).join("");
-  }
-  function popup(t) {
-    const box = $("rp-popups");
-    const d = document.createElement("div");
-    d.className = "popup " + (t.pnl_usd >= 0 ? "pos" : "neg");
-    d.innerHTML = `<b>${escapeHtml(t.label)}</b> ${escapeHtml(signedMoney(t.pnl_usd))}<small>${escapeHtml(REASON[t.exit_reason] || "")}</small>`;
-    box.prepend(d);
-    while (box.children.length > (innerWidth < 560 ? 2 : 4)) box.lastChild.remove();
-    setTimeout(() => d.classList.add("fade"), 1800 / rp.speed);
-  }
-  function stepReplay() {
-    if (!rp.playing) return;
-    if (rp.idx >= rp.trades.length) {
-      rp.playing = false;
-      $("rp-play").textContent = "▶ Пусни";
-      if ((sessionOf(lastData).change || 0) > 0) confetti();
-      return;
-    }
-    const t = rp.trades[rp.idx];
-    rp.idx += 1;
-    const s = sessionOf(lastData);
-    const prev = rp.shownPnl;
-    rp.shownPnl = rp.trades.slice(0, rp.idx).reduce((a, x) => a + (Number(x.pnl_usd) || 0), 0);
-    const node = $("rp-pnl");
-    node.className = "replay-pnl " + clsPnl(rp.shownPnl);
-    tween(node, prev, rp.shownPnl, 650 / rp.speed, (v) => signedMoney(v));
-    $("rp-bal").textContent = `Стек ${money(s.start + rp.shownPnl)} · ×${((s.start + rp.shownPnl) / s.start).toFixed(2)}`;
-    popup(t);
-    updateProgress();
-    drawReplayChart(s.start);
-    renderBoard(rp.trades.slice(0, rp.idx));
-    rp.timer = setTimeout(stepReplay, 1100 / rp.speed);
-  }
+  function stopReplay() { if (rp.timer) clearInterval(rp.timer); rp.timer = null; }
   $("rp-play").addEventListener("click", () => {
-    if (!rp.trades.length) return;
-    if (rp.playing) { rp.playing = false; clearTimeout(rp.timer); $("rp-play").textContent = "▶ Продължи"; return; }
-    if (rp.idx >= rp.trades.length) resetReplay();
-    rp.playing = true;
-    $("rp-play").textContent = "❚❚ Пауза";
-    stepReplay();
+    if (rp.timer) { stopReplay(); drawReplay(); return; }
+    if (rp.i >= rp.trades.length) rp.i = 0;
+    rp.timer = setInterval(() => { rp.i++; if (rp.i >= rp.trades.length) stopReplay(); drawReplay(); }, 900);
+    drawReplay();
   });
-  $("rp-restart").addEventListener("click", () => resetReplay());
-  $("rp-speed").addEventListener("click", () => {
-    rp.speed = rp.speed === 1 ? 2 : rp.speed === 2 ? 4 : 1;
-    $("rp-speed").textContent = `${rp.speed}×`;
-  });
+  $("rp-restart").addEventListener("click", () => { stopReplay(); rp.i = 0; drawReplay(); });
 
   // ------------------------------------------------------------ recap
-  function renderRecap(data) {
-    const s = sessionOf(data);
-    $("rc-bal").textContent = money(s.cur);
-    $("rc-bal").className = "recap-bal " + clsPnl(s.change);
-    $("rc-from").textContent = `от ${money(s.start)} старт · ${signedMoney(s.change)} (${signedPct(s.pct)})`;
-    $("rc-mult").textContent = `×${s.mult.toFixed(2)}`;
-    $("rc-mult").className = "recap-mult " + clsPnl(s.change);
-    const best = (s.best || [])[0];
-    const stat = (k, v, tone) => `<div class="stat"><span>${escapeHtml(k)}</span><b class="${tone || ""}">${escapeHtml(v)}</b></div>`;
-    $("rc-stats").innerHTML = [
-      stat("Сделки", String(s.trades ?? 0)),
-      stat("Зелени", s.green_pct == null ? "—" : `${s.green_pct}%`, s.green_pct == null ? "" : s.green_pct >= 50 ? "pos" : "neg"),
-      stat("Червени стопове", String(s.stops ?? 0), s.stops ? "neg" : ""),
-      stat("Печалби / загуби", `${s.wins ?? 0} / ${s.losses ?? 0}`),
-      stat("Най-добра", best ? `${best.label} ${signedMoney(best.pnl_usd)}` : "—", best ? "pos" : ""),
-      stat("Отворени сега", String(data.totals?.open_count ?? 0)),
+  function renderRecap() {
+    const s = data.session || {}, h = data.header || {}, p = data.pipeline || {}, sc = data.scanner || {}, cp = data.copy || {};
+    $("recap-span").textContent = demo ? "Демо сесия" : `Нощ ${h.session_first_night_id ?? h.night_id} · от ${hm(h.started_at, true)} · ${h.restarts_in_session ? h.restarts_in_session + " рестарта, една нощ" : "без рестарт"}`;
+    const st = (k, v, sm, c) => `<div class="st"><span>${esc(k)}</span><b class="${c || ""}">${esc(v)}</b>${sm ? `<small>${esc(sm)}</small>` : ""}</div>`;
+    $("recap-stats").innerHTML = [
+      st("P&L общо", smoney(s.change_usd), spct(s.change_pct, 2), cls(s.change_usd)),
+      st("Стек", money(s.current_stack), `старт ${money(s.start_stack)}`),
+      st("Сделки", s.trades ?? 0, `${s.wins ?? 0} зелени · ${s.losses ?? 0} червени`),
+      st("Стопове", s.stops ?? 0, s.green_pct != null ? `${s.green_pct}% зелени` : "—"),
     ].join("");
-    $("rc-empty").innerHTML = s.trades ? "" : empty("Сесията още няма сделки", "Обобщението е честно: стекът е непроменен, защото бюрото не е затворило нито една PAPER сделка.");
-    renderBoard(s.best || [], $("rc-best"));
+    const per = cp.per_trader || [];
+    $("recap-copy").innerHTML = per.length ? per.map((t) => { const a = avatar(t.handle, 46);
+      return `<div class="fi"><div class="fav" style="background:${a.bg}">${esc(a.l)}</div><div class="fb"><div class="ft">${esc(t.handle)}</div><div class="fs">${esc(t.closed)} затворени · ${esc(t.open)} отворени</div></div><div class="fr"><div class="fv ${cls(t.pnl_usd)}">${esc(smoney(t.pnl_usd))}</div></div></div>`; }).join("")
+      : `<div class="empty">Още няма копирани сделки. Следят се ${esc((cp.traders || []).filter((t) => t.active).length)} трейдъри.</div>`;
+    const total = Math.max(1, sc.scans_count || p.scans_count || 0);
+    const fun = (k, v, red) => `<div class="fun"><span>${esc(k)}</span><span class="bar"><i class="${red ? "red" : ""}" style="width:${Math.min(100, (v / total) * 100)}%"></i></span><b>${esc(v)}</b></div>`;
+    $("recap-funnel").innerHTML = fun("Проверени", sc.scans_count ?? p.scans_count ?? 0) + fun(`Ликв. < ${sc.min_liq_display || "$40K"}`, sc.liq_kills_recent ?? 0, true)
+      + fun("Отрязани общо", sc.kills_count ?? p.scans_kill ?? 0, true) + fun("Минали скенера", sc.pass_count ?? p.scans_pass ?? 0) + fun("Минали одита", (p.auditor || {}).passed_count ?? 0);
+    const best = s.best || [];
+    $("recap-best").innerHTML = best.length ? best.map((t) => feedRow({ ...t, side: "sell", ts: t.closed_at })).join("") : `<div class="empty">Няма затворени сделки.</div>`;
   }
 
-  // ------------------------------------------------------------ confetti
-  function confetti() {
-    const cv = $("confetti");
-    const ctx = cv.getContext("2d");
-    cv.width = innerWidth; cv.height = innerHeight;
-    cv.style.display = "block";
-    const colors = ["#3ddc84", "#f0b429", "#6aa6ff", "#9b8cff", "#ff5c6c", "#e8eef6"];
-    const parts = Array.from({ length: 160 }, () => ({
-      x: Math.random() * cv.width, y: -20 - Math.random() * cv.height * 0.5,
-      vx: (Math.random() - 0.5) * 3, vy: 2 + Math.random() * 4, r: 4 + Math.random() * 5,
-      c: colors[Math.floor(Math.random() * colors.length)], a: Math.random() * Math.PI, va: (Math.random() - 0.5) * 0.3,
-    }));
-    const t0 = performance.now();
-    const frame = (t) => {
-      ctx.clearRect(0, 0, cv.width, cv.height);
-      for (const p of parts) {
-        p.x += p.vx; p.y += p.vy; p.vy += 0.04; p.a += p.va;
-        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a); ctx.fillStyle = p.c;
-        ctx.fillRect(-p.r / 2, -p.r / 4, p.r, p.r / 2); ctx.restore();
-      }
-      if (t - t0 < 3200) requestAnimationFrame(frame);
-      else { ctx.clearRect(0, 0, cv.width, cv.height); cv.style.display = "none"; }
-    };
-    requestAnimationFrame(frame);
-  }
-
-  // ------------------------------------------------------------ views
+  // ------------------------------------------------------------ views / share
   function setView(v) {
-    currentView = v;
-    document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
-    ["desk", "replay", "recap"].forEach((x) => $("view-" + x).classList.toggle("hidden", x !== v));
-    if (v === "replay" && lastData && !rp.built) buildReplay(lastData);
-    if (v === "replay" && replayChart) replayChart.resize();
-    if (v === "recap" && lastData) {
-      renderRecap(lastData);
-      if (!confettiShown && sessionOf(lastData).change > 0) { confettiShown = true; confetti(); }
-    }
-    const p = hashParams();
-    p.set("v", v);
-    history.replaceState(null, "", "#" + p.toString());
+    view = v;
+    ["desk", "replay", "recap"].forEach((k) => $("view-" + k).classList.toggle("hidden", k !== v));
+    document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("on", b.dataset.view === v));
+    $("top-title").textContent = v === "desk" ? "Trading Desk" : v === "replay" ? "Повторение" : "Обобщение";
+    if (v === "desk" && data) renderChart();
+    if (v === "replay" && data) buildReplay();
+    window.scrollTo({ top: 0 });
   }
-  document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
+  document.querySelectorAll(".tab,[data-go]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view || b.dataset.go)));
+  $("back-btn").addEventListener("click", () => setView("desk"));
+  $("ranges").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; range = b.dataset.r; [...$("ranges").children].forEach((x) => x.classList.toggle("on", x === b)); renderChart(); });
+  $("share-btn").addEventListener("click", async () => {
+    if (!data) return;
+    const s = data.session || {};
+    // Shares a text summary only — never the private #g= link.
+    const text = `FOMO бюро · ${demo ? "DEMO" : "PAPER"}: ${money(s.equity_now)} (${smoney(s.change_usd)}, ${(num(s.multiplier) || 1).toFixed(2)}×) · ${s.trades ?? 0} сделки`;
+    try { if (navigator.share) await navigator.share({ text }); else { await navigator.clipboard.writeText(text); banner("Обобщението е копирано (без линка към данните).", false); setTimeout(() => banner(""), 2500); } } catch (_) {}
+  });
+  window.addEventListener("resize", () => { if (data && view === "desk") renderChart(); });
 
-  // ------------------------------------------------------------ render / load
-  function render(data) {
-    const firstTrades = lastData ? replayTrades(lastData).length : -1;
-    lastData = data;
-    el.setup.classList.add("hidden");
-    el.app.classList.remove("hidden");
-    const gen = parseTs(data.generated_at);
-    if (demo || (gen && Date.now() - gen.getTime() <= STALE_MS)) showBanner("", false);
-    renderHeader(data);
-    renderHero(data);
-    renderEquity(data);
-    renderAgents(data);
-    renderOpen(data);
-    renderFills(data);
-    renderFunnel(data);
-    renderFeed(data);
-    renderClosed(data);
-    renderStop(data);
-    renderRecap(data);
-    // rebuild replay only when the set of trades changed and it is not playing
-    if (!rp.playing && (firstTrades !== replayTrades(data).length || !rp.built)) {
-      rp.built = false;
-      if (currentView === "replay") buildReplay(data);
-    }
-    updateFreshness();
+  // ------------------------------------------------------------ load
+  function freshness() {
+    const f = $("freshness");
+    if (!data) return;
+    if (demo) { f.textContent = "Демо · примерни данни, нищо не е истинско"; return; }
+    const gen = ts(data.generated_at);
+    f.classList.toggle("err", !gen || Date.now() - gen.getTime() > STALE_MS);
+    f.textContent = `Данни отпреди ${ago(gen ? Date.now() - gen.getTime() : null)} · ${hm(gen, true)} (Europe/Sofia) · опресняване на ${POLL_MS / 1000} с`;
+    if (gen && Date.now() - gen.getTime() > STALE_MS) banner("Данните са остарели с повече от 3 минути. Компютърът на бюрото може да е замръзнал.", false);
   }
-
-  async function fetchViaApi(id) {
+  function render(d) {
+    data = d;
+    $("setup").classList.add("hidden"); $("app").classList.remove("hidden");
+    const gen = ts(d.generated_at);
+    if (demo || (gen && Date.now() - gen.getTime() <= STALE_MS)) banner("");
+    renderHeader(); renderChart(); renderAgents(); renderFeed(); renderRecap();
+    if (view === "replay" && !rp.timer) buildReplay();
+    freshness();
+  }
+  async function viaApi(id) {
     const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(id)}?ts=${Date.now()}`, { headers: { Accept: "application/vnd.github+json" }, cache: "no-store" });
-    if (res.status === 403 || res.status === 429) { const err = new Error("rate-limited"); err.code = res.status; throw err; }
+    if (res.status === 403 || res.status === 429) { const e = new Error("rate"); e.code = res.status; throw e; }
     if (!res.ok) throw new Error(`gist ${res.status}`);
     const body = await res.json();
     const file = (body.files && (body.files["fomo-desk.json"] || Object.values(body.files)[0])) || null;
-    if (!file) throw new Error("gist няма файл");
+    if (!file) throw new Error("no file");
     let text = file.content;
     if (!text || file.truncated) text = await (await fetch(file.raw_url, { cache: "no-store" })).text();
     return JSON.parse(text);
   }
-  async function fetchViaRaw(id) {
+  async function viaRaw(id) {
     const res = await fetch(`https://gist.githubusercontent.com/angelmalev9-creator/${encodeURIComponent(id)}/raw/fomo-desk.json?t=${Date.now()}`, { cache: "no-store" });
     if (!res.ok) throw new Error(`raw ${res.status}`);
     return res.json();
@@ -546,53 +360,41 @@
   async function load() {
     if (demo || !gistId) return;
     try {
-      let data;
-      try { data = await fetchViaApi(gistId); }
-      catch (e) {
-        if (e && (e.code === 403 || e.code === 429 || /rate/i.test(String(e.message)))) data = await fetchViaRaw(gistId);
-        else throw e;
-      }
-      if (data && data.demo) throw new Error("demo data in gist");
-      lastFetchOkAt = new Date();
-      render(data);
+      let d;
+      try { d = await viaApi(gistId); } catch (e) { if (e && (e.code === 403 || e.code === 429)) d = await viaRaw(gistId); else throw e; }
+      if (d && d.demo) throw new Error("demo data in gist");
+      lastOkAt = new Date(); render(d);
     } catch (e) {
-      el.freshness.classList.add("err");
-      el.freshness.textContent = "Неуспешно зареждане на данните";
-      showBanner("Таблото не успя да прочете данните от Gist. Провери линка #g=… и че gist_push работи.", true);
-      el.app.classList.remove("hidden");
+      $("app").classList.remove("hidden");
+      banner("Таблото не успя да прочете данните. Провери линка #g=… и че gist_push работи.", true);
     }
   }
-
+  function params() { const raw = (location.hash || "").replace(/^#/, ""); return new URLSearchParams(raw.includes("=") ? raw : ""); }
+  function readGist() {
+    const raw = (location.hash || "").replace(/^#/, "");
+    let id = params().get("g"); if (!id && /^[a-f0-9]{32}$/i.test(raw)) id = raw;
+    if (id) { id = id.trim(); try { localStorage.setItem(STORAGE_KEY, id); } catch (_) {} return id; }
+    try { return localStorage.getItem(STORAGE_KEY); } catch (_) { return null; }
+  }
   function start() {
-    const p = hashParams();
+    const p = params();
     demo = p.get("demo") === "1";
-    gistId = readGistId();
-    el.demoBanner.classList.toggle("hidden", !demo);
+    gistId = readGist();
+    $("demo-banner").classList.toggle("hidden", !demo);
     document.body.classList.toggle("is-demo", demo);
     $("demo-exit").href = gistId ? `#g=${gistId}` : "#";
     $("demo-exit").addEventListener("click", () => setTimeout(() => location.reload(), 30));
-    if (demo) {
-      el.setup.classList.add("hidden");
-      render(window.FOMO_DEMO.build());
-    } else if (!gistId) {
-      el.setup.classList.remove("hidden");
-      el.app.classList.add("hidden");
-      return;
-    } else {
-      load();
-      setInterval(load, POLL_MS);
-    }
-    setInterval(updateFreshness, 1000);
     const v = p.get("v");
+    if (demo) render(window.FOMO_DEMO.build());
+    else if (!gistId) { $("setup").classList.remove("hidden"); $("app").classList.add("hidden"); return; }
+    else { load(); setInterval(load, POLL_MS); }
+    setInterval(freshness, 1000);
     if (v && ["desk", "replay", "recap"].includes(v)) setView(v);
   }
-
   window.addEventListener("hashchange", () => {
-    const p = hashParams();
+    const p = params();
     if ((p.get("demo") === "1") !== demo) { location.reload(); return; }
-    const next = readGistId();
-    if (!demo && next && next !== gistId) { gistId = next; load(); }
+    const n = readGist(); if (!demo && n && n !== gistId) { gistId = n; load(); }
   });
-
   start();
 })();

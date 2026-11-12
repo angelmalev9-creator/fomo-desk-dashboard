@@ -3,166 +3,116 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#07090c">
+  <meta name="theme-color" content="#000000">
   <meta name="robots" content="noindex, nofollow">
-  <title>FOMO бюро · PAPER</title>
+  <title>FOMO бюро · Trading Desk</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css?v=2">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css?v=3">
 </head>
 <body>
   <div class="wrap">
     <div id="setup" class="setup hidden">
       <h1>Липсва връзка към данните</h1>
       <p>Отвори таблото с пълния линк, който завършва на <code>#g=…</code>. Идентификаторът се пази само в този браузър и не е записан в сайта.</p>
-      <p class="muted-s">Искаш само да видиш как изглежда? <a href="#demo=1">Отвори демото</a> с измислени данни.</p>
+      <p class="muted">Искаш само да видиш как изглежда? <a href="#demo=1">Отвори демото</a> с измислени данни.</p>
     </div>
 
     <div id="demo-banner" class="demo-banner hidden" role="status">
-      <b>DEMO данни</b>
-      <span>Всичко на тази страница е измислено, за да видиш как изглежда таблото. Не са истински сделки.</span>
-      <a id="demo-exit" href="#">Към истинските данни</a>
+      <b>DEMO данни</b><span>Всичко тук е измислено, само за да видиш изгледа.</span>
+      <a id="demo-exit" href="#">Към истинските</a>
     </div>
-
     <div id="banner" class="banner hidden" role="status"></div>
 
     <div id="app" class="hidden">
-      <header class="top">
-        <div class="brand">
-          <div class="logo">FM</div>
-          <div>
-            <h1>FOMO бюро</h1>
-            <div class="sub" id="night-sub">Частно PAPER бюро</div>
-          </div>
-        </div>
-        <div class="meta">
-          <div class="badges">
-            <span id="live-badge" class="badge live-ok"><span class="dot pulse"></span>НА ЖИВО</span>
-            <span id="mode-badge" class="badge paper"><span class="dot"></span>PAPER</span>
-            <span id="quiet-badge" class="badge quiet hidden">ТИХ РЕЖИМ</span>
-            <span id="paused-badge" class="badge warn hidden">ВХОДОВЕ НА ПАУЗА</span>
-          </div>
-          <div class="status-line" id="freshness">Зареждане…</div>
-        </div>
+      <header class="topbar">
+        <button class="back" id="back-btn" type="button" aria-label="Табло"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg><span id="top-title">Trading Desk</span></button>
+        <button class="share" id="share-btn" type="button"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" /></svg>Сподели</button>
       </header>
-
-      <nav class="tabs" role="tablist">
-        <button class="tab active" data-view="desk" role="tab">Табло</button>
-        <button class="tab" data-view="replay" role="tab">Повторение</button>
-        <button class="tab" data-view="recap" role="tab">Обобщение</button>
-      </nav>
 
       <!-- ============ DESK ============ -->
       <section id="view-desk" class="view">
-        <section class="card hero">
-          <div class="hero-top">
-            <div>
-              <h2>Баланс</h2>
-              <div class="hero-value" id="bal-value">—</div>
-              <div class="hero-change" id="bal-change">—</div>
+        <div class="desk-grid">
+          <div class="col-main">
+            <div class="idrow">
+              <div class="ident"><span class="bot-ico"><i></i><i></i></span><b>FOMO бюро</b><span class="chev">›</span></div>
+              <span id="live-pill" class="pill live"><span class="dot"></span><span id="live-text">На живо</span></span>
             </div>
-            <div class="hero-side" id="hero-side"></div>
+            <div class="subrow"><span id="sub-line">—</span><span id="mode-pill" class="tag paper">PAPER</span><span id="demo-pill" class="tag demo hidden">DEMO</span><span id="quiet-pill" class="tag quiet hidden">ТИХО</span><span id="paused-pill" class="tag warn hidden">ПАУЗА</span></div>
+
+            <div class="balance" id="bal-value">—</div>
+            <div class="change"><span id="bal-change">—</span><span id="bal-mult" class="mult">—</span></div>
+
+            <div class="chart-card">
+              <svg id="equity" class="equity" preserveAspectRatio="none"></svg>
+              <div class="chart-tl" id="chart-tl"></div>
+              <div class="chart-tr" id="chart-tr"></div>
+              <div class="chart-x" id="chart-x"></div>
+            </div>
+            <div class="ranges" id="ranges">
+              <button data-r="1h">1Ч</button><button data-r="4h">4Ч</button><button data-r="12h" class="on">12Ч</button><button data-r="1d">1Д</button><button data-r="1w">1С</button><button data-r="all">ALL</button>
+            </div>
           </div>
-          <div class="chart-box"><canvas id="equity"></canvas></div>
-          <div class="chart-note" id="equity-note"></div>
-        </section>
 
-        <section class="card">
-          <h2>Агенти</h2>
-          <div class="agents-grid" id="agents"></div>
-        </section>
+          <div class="col-side">
+            <div class="sec-head"><h2>Агенти</h2><span class="running" id="running">—</span></div>
+            <div class="agents" id="agents"></div>
+            <div class="pager" id="agents-pager"></div>
 
-        <div class="grid-2 swap">
-          <section class="card">
-            <h2>Отворени позиции</h2>
-            <div id="open-list"></div>
-          </section>
-          <section class="card">
-            <h2>Последни сделки</h2>
-            <div id="fills"></div>
-          </section>
-        </div>
-
-        <div class="grid-2">
-          <section class="card">
-            <h2>Поток тази нощ</h2>
-            <div class="funnel" id="funnel"></div>
-            <div class="reasons" id="rejects"></div>
-          </section>
-          <section class="card">
-            <h2>Активност</h2>
+            <div class="sec-head"><h2>Активност</h2><button class="link" id="feed-all" type="button">Виж всички</button></div>
             <div class="feed" id="feed"></div>
-          </section>
-        </div>
 
-        <section class="card">
-          <h2>Затворени сделки</h2>
-          <div class="scroll" id="closed-table"></div>
-        </section>
+            <div class="control">
+              <div class="control-txt"><b>Спри и продай всичко</b><span id="stop-note">Отваря Telegram. Там потвърждаваш с бутон. Само PAPER.</span></div>
+              <a id="stop-btn" class="stop-btn" href="#" target="_blank" rel="noopener">Спри</a>
+            </div>
+            <div class="foot" id="freshness">Зареждане…</div>
+          </div>
+        </div>
       </section>
 
       <!-- ============ REPLAY ============ -->
       <section id="view-replay" class="view hidden">
-        <section class="card replay-card">
-          <div class="replay-head">
-            <div>
-              <h2>Повторение на сесията</h2>
-              <div class="replay-pnl" id="rp-pnl">$0.00</div>
-              <div class="hero-change" id="rp-bal">—</div>
-            </div>
-            <div class="replay-ctrl">
-              <button class="btn" id="rp-play">▶ Пусни</button>
-              <button class="btn ghost" id="rp-restart">↺ Отначало</button>
-              <button class="btn ghost" id="rp-speed">1×</button>
-            </div>
-          </div>
-          <div class="progress"><div class="bar" id="rp-bar"></div></div>
-          <div class="progress-label"><span id="rp-count">0 от 0 сделки</span><span id="rp-time">—</span></div>
-          <div class="chart-box replay-chart"><canvas id="rp-chart"></canvas>
-            <div class="popups" id="rp-popups"></div>
-          </div>
-          <div id="rp-empty"></div>
-        </section>
-        <section class="card">
-          <h2>Най-добри сделки</h2>
-          <div id="rp-board" class="board"></div>
-        </section>
+        <button class="crumb" type="button" data-go="desk">‹ Табло</button>
+        <div class="rp-head">
+          <span class="rp-ico"><svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg></span>
+          <div><b>Докато спеше</b> <span class="muted" id="rp-night">нощ</span><div class="rp-span" id="rp-span">—</div></div>
+        </div>
+        <div class="rp-big" id="rp-pnl">+$0.00</div>
+        <div class="rp-sub" id="rp-sub">—</div>
+        <div class="rp-stage">
+          <svg id="rp-path" class="rp-svg" viewBox="0 0 400 420" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="rp-chip" id="rp-chip"><span class="muted">Баланс в момента</span><span id="rp-chip-t" class="muted">—</span><b id="rp-chip-v">—</b><svg id="rp-spark" viewBox="0 0 200 40" preserveAspectRatio="none"></svg></div>
+        </div>
+        <div class="rp-bar"><i id="rp-bar"></i></div>
+        <div class="rp-ctrl"><button id="rp-play" type="button">▶ Пусни</button><button id="rp-restart" type="button">↺ Отначало</button><span class="muted" id="rp-clock">— · повторение</span></div>
+        <div class="sec-head"><h2>Сделки през нощта</h2><span class="count" id="rp-count">0 от 0</span></div>
+        <div class="feed" id="rp-list"></div>
       </section>
 
       <!-- ============ RECAP ============ -->
       <section id="view-recap" class="view hidden">
-        <section class="card recap">
-          <h2>Обобщение на сесията</h2>
-          <div class="recap-bal" id="rc-bal">—</div>
-          <div class="recap-from" id="rc-from">—</div>
-          <div class="recap-mult" id="rc-mult">×1.00</div>
-          <div class="stats" id="rc-stats"></div>
-          <div id="rc-empty"></div>
-        </section>
-        <section class="card">
-          <h2>Най-добри сделки</h2>
-          <div id="rc-best" class="board"></div>
-        </section>
+        <button class="crumb" type="button" data-go="desk">‹ Табло</button>
+        <h1 class="recap-title">Обобщение на нощта</h1>
+        <div class="muted" id="recap-span">—</div>
+        <div class="stats" id="recap-stats"></div>
+        <div class="sec-head"><h2>Копиране</h2></div>
+        <div class="feed" id="recap-copy"></div>
+        <div class="sec-head"><h2>Скенер</h2></div>
+        <div class="funnel" id="recap-funnel"></div>
+        <div class="sec-head"><h2>Най-добри</h2></div>
+        <div class="feed" id="recap-best"></div>
       </section>
 
-      <footer>
-        <span>Времената са в Europe/Sofia. Данните се четат на всеки 75 секунди.</span>
-        <span>Линковете към монети са директни към FOMO, без съкращаване.</span>
-      </footer>
+      <nav class="tabbar" role="tablist">
+        <button class="tab on" data-view="desk" type="button">Табло</button>
+        <button class="tab" data-view="replay" type="button">Повторение</button>
+        <button class="tab" data-view="recap" type="button">Обобщение</button>
+      </nav>
     </div>
   </div>
-
-  <div class="sticky-stop hidden" id="stop-bar">
-    <a id="stop-btn" class="stop-btn" href="#" target="_blank" rel="noopener noreferrer">
-      <span class="sq"></span>Спри и продай всичко
-    </a>
-    <div class="stop-note" id="stop-note">Отваря Telegram бота. Там потвърждаваш с бутон. Само PAPER, FOMO не се пипа.</div>
-  </div>
-  <canvas id="confetti" class="confetti"></canvas>
-
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-  <script src="js/demo.js?v=2"></script>
-  <script src="js/app.js?v=2"></script>
+  <script src="js/demo.js?v=3"></script>
+  <script src="js/app.js?v=3"></script>
 </body>
 </html>
