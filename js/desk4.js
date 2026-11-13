@@ -4,7 +4,7 @@
 (() => {
   "use strict";
   const STORAGE_KEY = "fomoDeskGistId";
-  const POLL_MS = 45_000, STALE_MS = 3 * 60_000;
+  const POLL_MS = 5_000, PAUSE_MS = 2 * 60_000, STALE_MS = 3 * 60_000, STALL_S = 180;
   const $ = (id) => document.getElementById(id);
   const COLORS = { sniper: "#f97316", momentum: "#3b82f6", dip: "#14b8a6", whale: "#8b5cf6", desk: "#9ca3af" };
   const NAMES = { sniper: "Sniper", momentum: "Momentum", dip: "Dip Hunter", whale: "Whale Tail", desk: "Desk" };
@@ -90,6 +90,38 @@
   }
 
   // ------------------------------------------------------------ render
+  // ------------------------------------------------------------ live agent status
+  const tsAgo = (ts) => (ts ? `<span data-rel="${esc(ts)}">${rel(ts)}</span>` : "—");
+  function hm(ts) { const d = new Date(ts); if (!ts || Number.isNaN(d.getTime())) return "—"; return new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Sofia", hour: "2-digit", minute: "2-digit", hour12: false }).format(d); }
+  function hbAge(a) { const s = num(a.hb_age_s); if (s == null) return "—"; const real = s + Math.max(0, (Date.now() - genMs()) / 1000); return rel(new Date(Date.now() - real * 1000).toISOString()); }
+  function genMs() { const t = data && new Date(data.generated_at).getTime(); return t || Date.now(); }
+  function liveLine1(a) {
+    const L = a.live || {};
+    if (L.kind === "market") {
+      if (L.phase === "checking") return `checking ${L.checked || 0}/${L.candidates || 0} candidates of ${L.scanning || 0}`;
+      return `scanned ${L.scanning || 0} · ${L.candidates || 0} candidates · ${L.checked || 0} checked`;
+    }
+    if (L.kind === "sniper") return `waiting room ${L.waiting || 0} · last migration ${hm(L.last_migration_ts)}`;
+    if (L.kind === "whale") return `watching ${L.wallets || 0} wallets`;
+    return a.scan_text || "scanning";
+  }
+  function liveLine2(a) {
+    const L = a.live || {}, last = L.last;
+    const vcls = (v) => (v === "bought" || v === "copied" ? "g" : v === "pass" || v === "skip" || v === "kill" ? "why" : "why");
+    let h = "";
+    if (L.kind === "market") {
+      if (last) h += `<div>last <b>${esc(last.symbol)}</b> <span class="${vcls(last.verdict)}">${esc(last.reason)}</span> · ${tsAgo(last.ts)}</div>`;
+      else if ((L.top_reasons || []).length) h += `<div>${L.top_reasons.map(([k, v]) => `${esc(k)} ${v}`).join(" · ")}</div>`;
+      h += `<div class="mut2">cycle ${tsAgo(L.done_ts || L.cycle_ts)} ago · every 60s</div>`;
+    } else if (L.kind === "sniper") {
+      if (last) h += `<div>last <b>${esc(last.symbol)}</b> <span class="why">${esc(last.verdict)} · ${esc(last.reason)}</span> · ${tsAgo(last.ts)}</div>`;
+      h += `<div class="mut2">PumpPortal stream · audits each migration</div>`;
+    } else if (L.kind === "whale") {
+      h += `<div>last wallet tx ${tsAgo(L.last_tx_ts)} ago</div>`;
+      if (last) h += `<div class="mut2">${esc(last.handle)} ${esc(last.side || "")} ${esc(last.symbol)} → ${esc(last.reason)} · ${tsAgo(last.ts)}</div>`;
+    }
+    return h;
+  }
   function renderAgents(d4) {
     const grid = $("grid");
     const html = (d4.agents || []).map((a) => {
@@ -102,23 +134,43 @@
         const pct = num(p.pnl_pct);
         const sym = String(p.symbol || "?");
         const coin = p.fomo_url ? `<a class="ag-coin" href="${esc(p.fomo_url)}" target="_blank" rel="noopener">${esc(sym)}</a>` : `<span class="ag-coin">${esc(sym)}</span>`;
-        mid = `${coinIco(sym)}${coin}<span class="ag-size">$${fmt(num(p.size_usd) || 0)}${p.size_sol ? " · " + esc(p.size_sol) + " SOL" : ""}</span><span class="pct ${pct != null && pct < 0 ? "neg" : ""}">${pct == null ? "…" : spct(pct)}</span>`;
+        mid = `${coinIco(sym)}${coin}<span class="ag-size">$${fmt(num(p.size_usd) || 0)}${p.size_sol ? " · " + esc(p.size_sol) + " SOL" : ""}</span><span class="pct ${pct != null && pct < 0 ? "neg" : ""}" data-tw="pct:${esc(a.key)}" data-v="${pct ?? ""}">${pct == null ? "…" : spct(pct)}</span>`;
         chart = mini(p.series, a.color);
       } else {
         const off = a.state === "off";
-        mid = `<span class="scan">${esc(a.scan_text || "Scanning")}</span><span class="idle ${off ? "off" : ""}">${off ? "off" : "idle"}</span>`;
-        chart = mini(null);
+        if (off) mid = `<span class="scan">Off (flag)</span><span class="idle off">off</span>`;
+        else if (a.stalled) mid = `<span class="scan">No heartbeat ${hbAge(a)}</span><span class="idle off">stalled</span>`;
+        else mid = `<span class="scanning"><i></i>${esc(liveLine1(a))}</span>`;
+        chart = off || a.stalled ? mini(null) : `<div class="live2">${liveLine2(a)}</div>`;
       }
       const extra = (a.positions || []).length > 1 ? `<span class="more">+${a.positions.length - 1} more open</span>` : "";
-      const live = p ? `<span class="more">live ${smoney(p.pnl_usd)}</span>` : "";
-      return `<article class="card agent" data-k="${esc(a.key)}">
+      const live = `<span class="more" data-hb="${esc(a.key)}">${p ? "live " + smoney(p.pnl_usd) + " · " : ""}hb ${hbAge(a)}</span>`;
+      return `<article class="card agent ${a.stalled ? "stalled" : ""}" data-k="${esc(a.key)}">
         <div class="ag-head"><span class="ag-ico" style="background:${esc(a.color)}">${ICONS[a.icon] || ""}</span>
-          <div><div class="ag-name">${esc(a.name)}</div><div class="ag-sub">${esc(a.sub)}</div></div>${ring(p ? frac : 0.25, p ? a.color : "#d1d5db", !p && a.state !== "off")}</div>
+          <div><div class="ag-name">${esc(a.name)}</div><div class="ag-sub">${esc(a.sub)}</div></div>${ring(p ? frac : 0.25, p ? a.color : a.stalled ? "#ef4444" : a.color, !p && a.state !== "off" && !a.stalled)}</div>
         <div class="ag-mid">${mid}</div>${chart}
-        <div class="ag-foot"><span class="wl">${a.wins || 0}W · ${a.losses || 0}L ${extra || live}</span><span class="tot ${totCls}">${smoney(tot)}</span></div>
+        <div class="ag-foot"><span class="wl">${a.wins || 0}W · ${a.losses || 0}L ${extra} ${live}</span><span class="tot ${totCls}" data-tw="usd:${esc(a.key)}" data-v="${tot}">${smoney(tot)}</span></div>
       </article>`;
     }).join("");
     grid.innerHTML = html;
+    tween(grid);
+  }
+  const twPrev = {};
+  function tween(root) {
+    root.querySelectorAll("[data-tw]").forEach((el) => {
+      const key = el.getAttribute("data-tw"), to = num(el.getAttribute("data-v"));
+      if (to == null) return;
+      const from = twPrev[key]; twPrev[key] = to;
+      if (from == null || Math.abs(from - to) < 1e-9) return;
+      const isPct = key.startsWith("pct:"), t0 = performance.now(), dur = 1200;
+      const f = (t) => {
+        const k = Math.min(1, (t - t0) / dur), v = from + (to - from) * (1 - Math.pow(1 - k, 3));
+        el.textContent = isPct ? spct(v) : smoney(v);
+        if (k < 1 && el.isConnected) requestAnimationFrame(f);
+      };
+      el.classList.add("tick"); setTimeout(() => el.classList.remove("tick"), 700);
+      requestAnimationFrame(f);
+    });
   }
   const seenActs = new Set();
   function actLine(a, isNew) {
@@ -131,9 +183,10 @@
     else if (a.kind === "sold") { verb = "sold"; vc = neg ? "r" : "g"; }
     else if (a.kind === "bought") { verb = "bought"; }
     else if (a.kind === "rejected" || a.kind === "skipped") { verb = "skipped"; vc = "why"; }
+    else if (a.kind === "scan") { verb = "scanned"; vc = "why"; }
     let sub = String(a.subtitle || ""); const i = sub.indexOf(" · "); if (i > 0 && i < 14) sub = sub.slice(i + 3);
-    const valHtml = val && !/^skip/i.test(val) ? ` · <span class="${neg ? "r" : vc === "why" ? "why" : "g"}">${esc(val)}</span>` : "";
-    return `<li class="${isNew ? "new" : ""}"><span class="dot" style="background:${col}"></span><span class="t">${rel(a.ts)}</span><span class="txt"><span class="who" style="color:${col}">${esc(who)}</span> <span class="${vc}">${esc(verb)}</span> ${esc(coin)}${valHtml}${sub ? ` · <span class="why">${esc(sub)}</span>` : ""}</span></li>`;
+    const valHtml = val && !/^(skip|scan)/i.test(val) ? ` · <span class="${neg ? "r" : vc === "why" ? "why" : "g"}">${esc(val)}</span>` : "";
+    return `<li class="${isNew ? "new" : ""}"><span class="dot" style="background:${col}"></span><span class="t" data-rel="${esc(a.ts)}">${rel(a.ts)}</span><span class="txt"><span class="who" style="color:${col}">${esc(who)}</span> <span class="${vc}">${esc(verb)}</span> ${esc(coin)}${valHtml}${sub ? ` · <span class="why">${esc(sub)}</span>` : ""}</span></li>`;
   }
   function renderActivity(d4) {
     const acts = (d4.activity || []).slice().reverse().slice(0, 14);
@@ -198,12 +251,26 @@
     const el = $("live");
     if (demo) { el.className = "live"; $("live-t").textContent = "Demo"; return; }
     const gen = data && new Date(data.generated_at).getTime();
-    const fresh = gen && Date.now() - gen <= STALE_MS;
+    const age = gen ? Date.now() - gen : Infinity;
     const main = ((data && data.heartbeats) || []).find((h) => h.agent === "main");
-    if (!fresh) { el.className = "live stale"; $("live-t").textContent = "Stale"; }
-    else if (main && main.status !== "ok") { el.className = "live down"; $("live-t").textContent = "Down"; }
-    else { el.className = "live"; $("live-t").textContent = "Live"; }
-    $("foot-time").textContent = gen ? `updated ${rel(data.generated_at)} ago · times Europe/Sofia` : "";
+    const paused = age > PAUSE_MS;
+    document.body.classList.toggle("is-paused", paused);
+    const pb = $("paused");
+    if (paused) {
+      el.className = "live stale"; $("live-t").textContent = "Paused";
+      pb.innerHTML = `<b>Desk paused</b> · last update ${rel(data.generated_at)} ago (${hm(data.generated_at)} Sofia). The box sleeps now and then; the page catches up by itself when it wakes.`;
+      pb.classList.remove("hidden");
+    } else {
+      pb.classList.add("hidden");
+      if (main && main.status !== "ok") { el.className = "live down"; $("live-t").textContent = "Down"; }
+      else { el.className = "live"; $("live-t").textContent = "Live"; }
+    }
+    const lat = lastFetchAt ? Math.round((Date.now() - lastFetchAt) / 1000) : null;
+    $("foot-time").textContent = gen ? `desk data ${rel(data.generated_at)} old · page checked ${lat == null ? "—" : lat + "s"} ago · times Europe/Sofia` : "";
+  }
+  function tickRel() {
+    document.querySelectorAll("[data-rel]").forEach((e) => { e.textContent = rel(e.getAttribute("data-rel")); });
+    liveState();
   }
 
   function render(d) {
@@ -247,17 +314,27 @@
     if (!res.ok) throw new Error("raw " + res.status);
     return res.json();
   }
+  let lastFetchAt = null, loading = false, failN = 0;
+  async function rawFile(id, name) {
+    const res = await fetch(`https://gist.githubusercontent.com/angelmalev9-creator/${encodeURIComponent(id)}/raw/${name}?t=${Date.now()}`, { cache: "no-store" });
+    if (!res.ok) { const e = new Error("raw " + res.status); e.code = res.status; throw e; }
+    return res.json();
+  }
   async function load() {
+    if (loading) return; loading = true;
     try {
       let d;
-      try { d = await viaApi(gistId); } catch (e) { if (e && (e.code === 403 || e.code === 429)) d = await viaRaw(gistId); else throw e; }
+      try { d = await rawFile(gistId, "fomo-live.json"); }
+      catch (e) { try { d = await rawFile(gistId, "fomo-desk.json"); } catch (e2) { d = await viaApi(gistId); } }
       if (d && d.demo) throw new Error("demo data in gist");
-      lastOk = Date.now(); render(d);
+      lastFetchAt = Date.now(); failN = 0;
+      const newer = !data || !data.generated_at || new Date(d.generated_at) > new Date(data.generated_at);
+      if (newer) render(d); else liveState();
     } catch (e) {
+      failN++;
       $("app").classList.remove("hidden");
-      $("err").textContent = "Could not read the desk data. Check the #g=… link and that gist_push is running.";
-      $("err").classList.remove("hidden");
-    }
+      if (failN >= 3) { $("err").textContent = "Could not read the desk data. Check the #g=… link and that gist_push is running."; $("err").classList.remove("hidden"); }
+    } finally { loading = false; }
   }
   function params() { const raw = (location.hash || "").replace(/^#/, ""); return new URLSearchParams(raw.includes("=") ? raw : ""); }
   function readGist() {
@@ -276,8 +353,11 @@
     $("demo-exit").addEventListener("click", () => setTimeout(() => location.reload(), 30));
     if (demo) { window.FOMO_DEMO4.run(render); }
     else if (!gistId) { $("setup").classList.remove("hidden"); return; }
-    else { load(); setInterval(load, POLL_MS); }
-    setInterval(() => { if (data && data.desk4) { renderActivity(data.desk4); liveState(); } }, 5000);
+    else {
+      load(); setInterval(load, POLL_MS);
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+    }
+    setInterval(() => { if (data && data.desk4) tickRel(); }, 1000);
   }
   window.addEventListener("hashchange", () => {
     const p = params();

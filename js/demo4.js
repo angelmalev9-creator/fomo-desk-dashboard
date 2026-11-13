@@ -59,6 +59,9 @@
         const u = p ? Math.round(p.size_usd * p.series[p.series.length - 1] * 100) / 100 : 0; unreal += u;
         return { key: a.key, name: a.name, icon: a.icon, color: a.color, sub: a.sub, enabled: true, state: p ? "in_trade" : "idle",
           scan_text: a.key === "whale" ? "Watching 4 wallets" : `Scanning ${a.scan + Math.floor(r(-20, 20))} pairs`,
+          hb_age_s: Math.floor(r(1, 20)), stalled: false,
+          live: { kind: "market", phase: "waiting", scanning: a.scan, candidates: Math.floor(r(1, 6)), checked: Math.floor(r(0, 4)), done_ts: iso(Date.now() - r(1, 50) * 1000),
+            last: { symbol: "$DEMO" + Math.floor(r(10, 99)), verdict: "pass", reason: ["under the 1h high (-0.4%)", "sellers lead", "top 10 hold 61%", "no volume spike"][Math.floor(r(0, 4))], ts: iso(Date.now() - r(2, 40) * 1000) } },
           sleeve_usd: cash / 4, sleeve_used_usd: p ? p.size_usd : 0, wins: s.w, losses: s.l, pnl_usd: Math.round((s.pnl + u) * 100) / 100,
           positions: p ? [{ symbol: p.symbol, size_usd: p.size_usd, size_sol: p.size_sol, pnl_usd: u, pnl_pct: p.series[p.series.length - 1] * 100, series: p.series.slice(-40) }] : [] };
       });
