@@ -1,118 +1,81 @@
 <!DOCTYPE html>
-<html lang="bg">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#000000">
+  <meta name="theme-color" content="#f2f3f5">
   <meta name="robots" content="noindex, nofollow">
-  <title>FOMO бюро · Trading Desk</title>
+  <title>Grok Bot · 4 agents · PAPER</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css?v=3">
+  <link rel="stylesheet" href="css/desk4.css?v=4">
 </head>
 <body>
+  <div id="toast-zone" class="toast-zone" aria-live="polite"></div>
   <div class="wrap">
-    <div id="setup" class="setup hidden">
-      <h1>Липсва връзка към данните</h1>
-      <p>Отвори таблото с пълния линк, който завършва на <code>#g=…</code>. Идентификаторът се пази само в този браузър и не е записан в сайта.</p>
-      <p class="muted">Искаш само да видиш как изглежда? <a href="#demo=1">Отвори демото</a> с измислени данни.</p>
+    <div id="setup" class="card setup hidden">
+      <h1>No data link</h1>
+      <p>Open the dashboard with the full link ending in <code>#g=…</code>. The id is kept only in this browser.</p>
+      <p class="muted">Just want to see the look? <a href="#demo=1">Open the demo</a> (made-up data).</p>
     </div>
 
     <div id="demo-banner" class="demo-banner hidden" role="status">
-      <b>DEMO данни</b><span>Всичко тук е измислено, само за да видиш изгледа.</span>
-      <a id="demo-exit" href="#">Към истинските</a>
+      <b>DEMO · SIMULATED</b><span>Made-up numbers that only show the animation, like the video. Nothing here is real.</span>
+      <a id="demo-exit" href="#">Real desk →</a>
     </div>
-    <div id="banner" class="banner hidden" role="status"></div>
+    <div id="err" class="err hidden" role="status"></div>
 
-    <div id="app" class="hidden">
-      <header class="topbar">
-        <button class="back" id="back-btn" type="button" aria-label="Табло"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg><span id="top-title">Trading Desk</span></button>
-        <button class="share" id="share-btn" type="button"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" /></svg>Сподели</button>
+    <main id="app" class="hidden">
+      <div class="statusbar">
+        <span class="mult-pill" id="mult-top"><i class="live-dot"></i><span id="mult-top-v">1.00×</span></span>
+        <span class="mode-pill" id="mode-pill"><b id="mode-word">PAPER</b> 4 agents</span>
+      </div>
+
+      <header class="head">
+        <div class="app-ico" aria-hidden="true"><svg viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="#111"/><path d="M11 25c2-9 9-14 18-14-2 2-3 4-3 6 0 6-6 10-15 8z" fill="#fff"/><circle cx="24" cy="18" r="2" fill="#111"/></svg></div>
+        <div class="title">
+          <h1>Grok Bot</h1>
+          <div class="sub">Solana memes • 4 agents</div>
+        </div>
+        <span class="live" id="live"><i></i><span id="live-t">Live</span></span>
       </header>
 
-      <!-- ============ DESK ============ -->
-      <section id="view-desk" class="view">
-        <div class="desk-grid">
-          <div class="col-main">
-            <div class="idrow">
-              <div class="ident"><span class="bot-ico"><i></i><i></i></span><b>FOMO бюро</b><span class="chev">›</span></div>
-              <span id="live-pill" class="pill live"><span class="dot"></span><span id="live-text">На живо</span></span>
-            </div>
-            <div class="subrow"><span id="sub-line">—</span><span id="mode-pill" class="tag paper">PAPER</span><span id="demo-pill" class="tag demo hidden">DEMO</span><span id="quiet-pill" class="tag quiet hidden">ТИХО</span><span id="paused-pill" class="tag warn hidden">ПАУЗА</span></div>
+      <div class="ticker" id="ticker" aria-label="prices"><div class="ticker-track" id="ticker-track"></div></div>
 
-            <div class="balance" id="bal-value">—</div>
-            <div class="change"><span id="bal-change">—</span><span id="bal-mult" class="mult">—</span></div>
-
-            <div class="chart-card">
-              <svg id="equity" class="equity" preserveAspectRatio="none"></svg>
-              <div class="chart-tl" id="chart-tl"></div>
-              <div class="chart-tr" id="chart-tr"></div>
-              <div class="chart-x" id="chart-x"></div>
-            </div>
-            <div class="ranges" id="ranges">
-              <button data-r="1h">1Ч</button><button data-r="4h">4Ч</button><button data-r="12h" class="on">12Ч</button><button data-r="1d">1Д</button><button data-r="1w">1С</button><button data-r="all">ALL</button>
-            </div>
-          </div>
-
-          <div class="col-side">
-            <div class="sec-head"><h2>Агенти</h2><span class="running" id="running">—</span></div>
-            <div class="agents" id="agents"></div>
-            <div class="pager" id="agents-pager"></div>
-
-            <div class="sec-head"><h2>Активност</h2><button class="link" id="feed-all" type="button">Виж всички</button></div>
-            <div class="feed" id="feed"></div>
-
-            <div class="control">
-              <div class="control-txt"><b>Спри и продай всичко</b><span id="stop-note">Отваря Telegram. Там потвърждаваш с бутон. Само PAPER.</span></div>
-              <a id="stop-btn" class="stop-btn" href="#" target="_blank" rel="noopener">Спри</a>
-            </div>
-            <div class="foot" id="freshness">Зареждане…</div>
-          </div>
+      <section class="equity">
+        <div class="eq-top">
+          <span class="eq-label" id="eq-label">Equity • started with —</span>
+          <span class="mult-btn" id="mult-btn">1.00×</span>
         </div>
+        <div class="balance" id="balance"><span class="b-int">$0</span><span class="b-cents">.00</span></div>
+        <div class="eq-row">
+          <span class="profit" id="profit">+$0.00 (0%)</span>
+          <span class="streak hidden" id="streak">🔥 0</span>
+          <span class="stats" id="stats">Agents warming up...</span>
+        </div>
+        <svg class="eq-line" id="eq-line" viewBox="0 0 400 70" preserveAspectRatio="none" aria-hidden="true"></svg>
       </section>
 
-      <!-- ============ REPLAY ============ -->
-      <section id="view-replay" class="view hidden">
-        <button class="crumb" type="button" data-go="desk">‹ Табло</button>
-        <div class="rp-head">
-          <span class="rp-ico"><svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg></span>
-          <div><b>Докато спеше</b> <span class="muted" id="rp-night">нощ</span><div class="rp-span" id="rp-span">—</div></div>
-        </div>
-        <div class="rp-big" id="rp-pnl">+$0.00</div>
-        <div class="rp-sub" id="rp-sub">—</div>
-        <div class="rp-stage">
-          <svg id="rp-path" class="rp-svg" viewBox="0 0 400 420" preserveAspectRatio="xMidYMid meet"></svg>
-          <div class="rp-chip" id="rp-chip"><span class="muted">Баланс в момента</span><span id="rp-chip-t" class="muted">—</span><b id="rp-chip-v">—</b><svg id="rp-spark" viewBox="0 0 200 40" preserveAspectRatio="none"></svg></div>
-        </div>
-        <div class="rp-bar"><i id="rp-bar"></i></div>
-        <div class="rp-ctrl"><button id="rp-play" type="button">▶ Пусни</button><button id="rp-restart" type="button">↺ Отначало</button><span class="muted" id="rp-clock">— · повторение</span></div>
-        <div class="sec-head"><h2>Сделки през нощта</h2><span class="count" id="rp-count">0 от 0</span></div>
-        <div class="feed" id="rp-list"></div>
+      <section class="grid" id="grid"></section>
+
+      <section class="card activity">
+        <div class="act-head"><h2>Activity <span class="live-tag"><i></i>live</span></h2><span class="muted" id="act-sum"></span></div>
+        <ul id="act-list" class="act-list"></ul>
       </section>
 
-      <!-- ============ RECAP ============ -->
-      <section id="view-recap" class="view hidden">
-        <button class="crumb" type="button" data-go="desk">‹ Табло</button>
-        <h1 class="recap-title">Обобщение на нощта</h1>
-        <div class="muted" id="recap-span">—</div>
-        <div class="stats" id="recap-stats"></div>
-        <div class="sec-head"><h2>Копиране</h2></div>
-        <div class="feed" id="recap-copy"></div>
-        <div class="sec-head"><h2>Скенер</h2></div>
-        <div class="funnel" id="recap-funnel"></div>
-        <div class="sec-head"><h2>Най-добри</h2></div>
-        <div class="feed" id="recap-best"></div>
+      <section class="card goal">
+        <div class="goal-head"><h2 id="goal-title">Goal: 2×</h2><span id="goal-right" class="goal-right"></span></div>
+        <div class="goal-bar" id="goal-bar"></div>
       </section>
 
-      <nav class="tabbar" role="tablist">
-        <button class="tab on" data-view="desk" type="button">Табло</button>
-        <button class="tab" data-view="replay" type="button">Повторение</button>
-        <button class="tab" data-view="recap" type="button">Обобщение</button>
-      </nav>
-    </div>
+      <footer class="foot">
+        <span id="foot-mode">PAPER only · no real orders · numbers are the desk's own PAPER fills</span>
+        <span id="foot-time"></span>
+      </footer>
+    </main>
   </div>
-  <script src="js/demo.js?v=3"></script>
-  <script src="js/app.js?v=3"></script>
+  <script src="js/demo4.js?v=4"></script>
+  <script src="js/desk4.js?v=4"></script>
 </body>
 </html>
