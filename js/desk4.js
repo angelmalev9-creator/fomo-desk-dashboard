@@ -298,12 +298,14 @@
   }
 
   // ------------------------------------------------------------ loading
-  async function viaApi(id) {
+  let apiLeft = null;
+  async function viaApi(id, name) {
     const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(id)}?ts=${Date.now()}`, { headers: { Accept: "application/vnd.github+json" }, cache: "no-store" });
+    apiLeft = num(res.headers.get("x-ratelimit-remaining"));
     if (res.status === 403 || res.status === 429) { const e = new Error("rate"); e.code = res.status; throw e; }
     if (!res.ok) throw new Error("gist " + res.status);
     const body = await res.json();
-    const file = (body.files && (body.files["fomo-desk.json"] || Object.values(body.files)[0])) || null;
+    const file = (body.files && (body.files[name || "fomo-desk.json"] || body.files["fomo-desk.json"] || Object.values(body.files)[0])) || null;
     if (!file) throw new Error("no file");
     let text = file.content;
     if (!text || file.truncated) text = await (await fetch(file.raw_url, { cache: "no-store" })).text();
@@ -314,7 +316,7 @@
     if (!res.ok) throw new Error("raw " + res.status);
     return res.json();
   }
-  let lastFetchAt = null, loading = false, failN = 0;
+  let lastFetchAt = null, loading = false, failN = 0, lastApiAt = 0;
   async function rawFile(id, name) {
     const res = await fetch(`https://gist.githubusercontent.com/angelmalev9-creator/${encodeURIComponent(id)}/raw/${name}?t=${Date.now()}`, { cache: "no-store" });
     if (!res.ok) { const e = new Error("raw " + res.status); e.code = res.status; throw e; }
@@ -324,7 +326,11 @@
     if (loading) return; loading = true;
     try {
       let d;
-      try { d = await rawFile(gistId, "fomo-live.json"); }
+      // raw CDN can lag up to ~1 min; the API is always fresh but allows only 60 calls/h per viewer,
+      // so use it at most every 2 min (and only while it has quota left).
+      const useApi = Date.now() - lastApiAt > 120_000 && (apiLeft == null || apiLeft > 15);
+      if (useApi) { lastApiAt = Date.now(); try { d = await viaApi(gistId, "fomo-live.json"); } catch (_) { d = null; } }
+      if (!d) try { d = await rawFile(gistId, "fomo-live.json"); }
       catch (e) { try { d = await rawFile(gistId, "fomo-desk.json"); } catch (e2) { d = await viaApi(gistId); } }
       if (d && d.demo) throw new Error("demo data in gist");
       lastFetchAt = Date.now(); failN = 0;
