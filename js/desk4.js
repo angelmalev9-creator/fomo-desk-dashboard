@@ -274,6 +274,21 @@
     liveState();
   }
 
+  function renderMilky(mk) {
+    const box = $("milky"); if (!box) return;
+    if (!mk) { box.classList.add("hidden"); return; }
+    box.classList.remove("hidden");
+    const c = mk.counts || {}, st = mk.status || {};
+    $("milky-sum").textContent = `${mk.enabled === false ? "off" : "recording"} · E1 ${c.E1 || 0} · E2 ${c.E2 || 0} · no trades`;
+    const pct = (v) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v}%`);
+    const items = mk.items || [];
+    $("milky-list").innerHTML = items.length ? items.map((x) => {
+      const o = x.outcome || {}, x1 = o.x1 || {};
+      const res = x.outcome ? `1h ${pct(o.max_up_1h_pct)}/${pct(o.max_down_1h_pct)} · X1 ${x1.pnl_usd != null ? smoney(x1.pnl_usd) : "—"}${x.final ? "" : " (open)"}` : "waiting for candles";
+      return `<li class="act-line">${coinIco(x.symbol || "?")}<b>${esc(x.symbol || "?")}</b> ${esc(x.entry || "")} · ${tsAgo(x.trigger_ts)} ago · <span class="muted">${esc((x.filters || []).join(", "))}</span> · ${esc(res)}</li>`;
+    }).join("") : `<li class="act-empty">No setups yet · checked ${st.fetched ?? 0} coins last cycle.</li>`;
+  }
+
   function render(d) {
     data = d; const d4 = d.desk4;
     $("app").classList.remove("hidden"); $("err").classList.add("hidden");
@@ -292,7 +307,7 @@
     const st = $("streak"); st.classList.toggle("hidden", !(s.streak > 1)); st.textContent = `🔥 ${s.streak}`;
     eqLine(d4.series, num(eq.start));
     renderTicker(d4.ticker);
-    renderAgents(d4); renderActivity(d4); renderGoal(d4.goal || {}, m);
+    renderAgents(d4); renderActivity(d4); renderMilky(d.milky); renderGoal(d4.goal || {}, m);
     $("foot-mode").textContent = demo ? "DEMO · simulated numbers, nothing real" : "PAPER only · no real orders · real market prices, the desk's own PAPER fills";
     events(d4.events);
     liveState();
