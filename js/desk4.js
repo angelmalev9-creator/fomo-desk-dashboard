@@ -6,13 +6,14 @@
   const STORAGE_KEY = "fomoDeskGistId";
   const POLL_MS = 5_000, PAUSE_MS = 2 * 60_000, STALE_MS = 3 * 60_000, STALL_S = 180;
   const $ = (id) => document.getElementById(id);
-  const COLORS = { sniper: "#f97316", momentum: "#3b82f6", dip: "#14b8a6", whale: "#8b5cf6", desk: "#9ca3af" };
-  const NAMES = { sniper: "Sniper", momentum: "Momentum", dip: "Dip Hunter", whale: "Whale Tail", desk: "Desk" };
+  const COLORS = { sniper: "#f97316", momentum: "#3b82f6", dip: "#14b8a6", quiet: "#eab308", whale: "#8b5cf6", desk: "#9ca3af" };
+  const NAMES = { sniper: "Sniper", momentum: "Momentum", dip: "Dip Hunter", quiet: "Quiet Breakout", whale: "Whale Tail", desk: "Desk" };
   const ICONS = {
     target: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg>',
     bolt: '<svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z" fill="#fff" stroke="none"/></svg>',
     radar: '<svg viewBox="0 0 24 24"><path d="M3 6l6 7 4-4 8 9"/><path d="M15 18h6v-6"/></svg>',
     whale: '<svg viewBox="0 0 24 24"><path d="M3 9c3-3 6 3 9 0s6 3 9 0"/><path d="M3 15c3-3 6 3 9 0s6 3 9 0"/></svg>',
+    quiet: '<svg viewBox="0 0 24 24"><path d="M3 15h7l3-6h8"/><path d="M17 5l4 4-4 4"/></svg>',
   };
   let gistId = null, demo = false, data = null, shownBal = null, balAnim = null, seenEvents = null, lastOk = null;
 
@@ -229,7 +230,7 @@
     const z = $("toast-zone"), col = COLORS[e.agent] || "#111";
     const el = document.createElement("div");
     el.className = "toast";
-    el.innerHTML = `<span class="ti" style="background:${col}">${ICONS[{ sniper: "target", momentum: "bolt", dip: "radar", whale: "whale" }[e.agent]] || ""}</span>
+    el.innerHTML = `<span class="ti" style="background:${col}">${ICONS[{ sniper: "target", momentum: "bolt", dip: "radar", quiet: "quiet", whale: "whale" }[e.agent]] || ""}</span>
       <div><div class="tt">${esc(e.text)}</div><div class="ts">${demo ? "DEMO · simulated" : "PAPER · real market price"}</div></div><span class="tv ${e.good ? "" : "neg"}">${esc(e.value || "")}</span>`;
     z.appendChild(el); setTimeout(() => el.remove(), 4800);
     const card = document.querySelector(`.agent[data-k="${e.agent}"]`);
